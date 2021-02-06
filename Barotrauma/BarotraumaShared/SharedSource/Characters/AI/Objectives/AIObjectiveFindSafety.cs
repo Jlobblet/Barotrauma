@@ -14,8 +14,9 @@ namespace Barotrauma
         public override bool IgnoreUnsafeHulls => true;
         public override bool ConcurrentObjectives => true;
         public override bool AllowOutsideSubmarine => true;
+        public override bool AllowInAnySub => true;
         public override bool AbandonWhenCannotCompleteSubjectives => false;
-        public override bool IsLoop { get => true; set => throw new Exception("Trying to set the value for IsLoop from: " + Environment.StackTrace); }
+        public override bool IsLoop { get => true; set => throw new Exception("Trying to set the value for IsLoop from: " + Environment.StackTrace.CleanupStackTrace()); }
 
         // TODO: expose?
         const float priorityIncrease = 100;
@@ -45,7 +46,7 @@ namespace Barotrauma
             }
             if (character.CurrentHull == null)
             {
-                Priority = objectiveManager.CurrentOrder is AIObjectiveGoTo && HumanAIController.HasDivingSuit(character) ? 0 : 100;
+                Priority = (objectiveManager.IsCurrentOrder<AIObjectiveGoTo>() || objectiveManager.Objectives.Any(o => o is AIObjectiveCombat)) && HumanAIController.HasDivingSuit(character) ? 0 : 100;
             }
             else
             {
@@ -203,11 +204,15 @@ namespace Barotrauma
                         {
                             // Don't ignore any hulls if outside, because apparently it happens that we can't find a path, in which case we just want to try again.
                             // If we ignore the hull, it might be the only airlock in the target sub, which ignores the whole sub.
-                            if (currentHull != null && goToObjective != null)
+                            // If the target hull is inside a submarine that is not our main sub, just ignore it normally when it cannot be reached. This happens with outposts.
+                            if (goToObjective != null)
                             {
                                 if (goToObjective.Target is Hull hull)
                                 {
-                                    HumanAIController.UnreachableHulls.Add(hull);
+                                    if (currentHull != null || !Submarine.MainSubs.Contains(hull.Submarine))
+                                    {
+                                        HumanAIController.UnreachableHulls.Add(hull);
+                                    }
                                 }
                             }
                             RemoveSubObjective(ref goToObjective);

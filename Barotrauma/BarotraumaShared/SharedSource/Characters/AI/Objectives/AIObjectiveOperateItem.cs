@@ -11,6 +11,7 @@ namespace Barotrauma
         public override string DebugTag => $"operate item {component.Name}";
         public override bool AllowAutomaticItemUnequipping => true;
         public override bool AllowMultipleInstances => true;
+        public override bool AllowInAnySub => true;
 
         private ItemComponent component, controller;
         private Entity operateTarget;
@@ -35,9 +36,11 @@ namespace Barotrauma
 
         public override float GetPriority()
         {
+            bool isOrder = objectiveManager.CurrentOrder == this;
             if (!IsAllowed || character.LockHands)
             {
                 Priority = 0;
+                Abandon = !isOrder;
                 return Priority;
             }
             if (component.Item.ConditionPercentage <= 0)
@@ -46,7 +49,6 @@ namespace Barotrauma
             }
             else
             {
-                bool isOrder = objectiveManager.CurrentOrder == this;
                 if (isOrder)
                 {
                     Priority = AIObjectiveManager.OrderPriority;
@@ -155,11 +157,20 @@ namespace Barotrauma
                 Abandon = true;
                 return;
             }
-            // Don't allow to operate an item that someone with a better skills already operates, unless this is an order
-            if (objectiveManager.CurrentOrder != this && HumanAIController.IsItemOperatedByAnother(target, out _))
+            // If this is not an order...
+            if (objectiveManager.CurrentOrder != this)
             {
-                // Don't abandon
-                return;
+                // Don't allow to operate an item that someone with a better skills already operates
+                if (HumanAIController.IsItemOperatedByAnother(target, out _))
+                {
+                    // Don't abandon
+                    return;
+                }
+                if (component.Item.IgnoreByAI || (useController && controller.Item.IgnoreByAI))
+                {
+                    Abandon = true;
+                    return;
+                }
             }
             if (operateTarget != null)
             {
@@ -172,7 +183,7 @@ namespace Barotrauma
             }
             if (target.CanBeSelected)
             {
-                if (character.CanInteractWith(target.Item, out _, checkLinked: false))
+                if (!character.IsClimbing && character.CanInteractWith(target.Item, out _, checkLinked: false))
                 {
                     HumanAIController.FaceTarget(target.Item);
                     if (character.SelectedConstruction != target.Item)
@@ -189,7 +200,8 @@ namespace Barotrauma
                     TryAddSubObjective(ref goToObjective, () => new AIObjectiveGoTo(target.Item, character, objectiveManager, closeEnough: 50)
                     {
                         DialogueIdentifier = "dialogcannotreachtarget",
-                        TargetName = target.Item.Name
+                        TargetName = target.Item.Name,
+                        endNodeFilter = node => node.Waypoint.Ladders == null
                     },
                         onAbandon: () => Abandon = true,
                         onCompleted: () => RemoveSubObjective(ref goToObjective));

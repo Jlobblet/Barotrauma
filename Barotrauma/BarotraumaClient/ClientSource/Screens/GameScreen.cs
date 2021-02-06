@@ -75,6 +75,17 @@ namespace Barotrauma
             {
                 Character.Controlled.SelectedConstruction.AddToGUIUpdateList();
             }
+            if (Character.Controlled?.Inventory != null)
+            {
+                foreach (Item item in Character.Controlled.Inventory.Items)
+                {
+                    if (item == null) { continue; }
+                    if (Character.Controlled.HasEquippedItem(item))
+                    {
+                        item.AddToGUIUpdateList();
+                    }
+                }
+            }
 
             if (GameMain.GameSession != null) GameMain.GameSession.AddToGUIUpdateList();
 
@@ -175,7 +186,7 @@ namespace Barotrauma
             spriteBatch.End();
 
             graphics.SetRenderTarget(null);
-            GameMain.LightManager.UpdateLightMap(graphics, spriteBatch, cam, renderTarget);
+            GameMain.LightManager.RenderLightMap(graphics, spriteBatch, cam, renderTarget);
 
             //------------------------------------------------------------------------
             graphics.SetRenderTarget(renderTargetBackground);

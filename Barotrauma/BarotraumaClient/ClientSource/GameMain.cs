@@ -79,7 +79,7 @@ namespace Barotrauma
                 if (gameSession == value) { return; }
                 if (value == null && Screen.Selected == GameScreen && gameSession.GameMode is CampaignMode)
                 {
-                    DebugConsole.AddWarning("GameSession set to null while in the game screen\n" + Environment.StackTrace);
+                    DebugConsole.AddWarning("GameSession set to null while in the game screen\n" + Environment.StackTrace.CleanupStackTrace());
                 }
                 if (gameSession?.GameMode != null && gameSession.GameMode != value?.GameMode)
                 {
@@ -525,6 +525,7 @@ namespace Barotrauma
             Tutorials.Tutorial.Init();
             MapGenerationParams.Init();
             LevelGenerationParams.LoadPresets();
+            CaveGenerationParams.LoadPresets();
             OutpostGenerationParams.LoadPresets();
             WreckAIConfig.LoadAll();
             EventSet.LoadPrefabs();
@@ -533,6 +534,7 @@ namespace Barotrauma
             SkillSettings.Load(GetFilesOfType(ContentType.SkillSettings));
             Order.Init();
             EventManagerSettings.Init();
+            BallastFloraPrefab.LoadAll(GetFilesOfType(ContentType.MapCreature));
             TitleScreen.LoadState = 50.0f;
         yield return CoroutineStatus.Running;
 
@@ -632,6 +634,7 @@ namespace Barotrauma
         /// </summary>
         protected override void UnloadContent()
         {
+            TextureLoader.CancelAll();
             CoroutineManager.StopCoroutines("Load");
             Video.Close();
             VoipCapture.Instance?.Dispose();
@@ -669,7 +672,7 @@ namespace Barotrauma
 #if DEBUG
                 DebugConsole.ThrowError($"Failed to parse a Steam friend's connect invitation command ({connectCommand})", e);
 #else
-                DebugConsole.Log($"Failed to parse a Steam friend's connect invitation command ({connectCommand})\n" + e.StackTrace);
+                DebugConsole.Log($"Failed to parse a Steam friend's connect invitation command ({connectCommand})\n" + e.StackTrace.CleanupStackTrace());
 #endif
                 ConnectName = null;
                 ConnectEndpoint = null;
@@ -680,7 +683,7 @@ namespace Barotrauma
         }
 
         public void OnLobbyJoinRequested(Steamworks.Data.Lobby lobby, Steamworks.SteamId friendId)
-    {
+        {
             SteamManager.JoinLobby(lobby.Id, true);
         }
 

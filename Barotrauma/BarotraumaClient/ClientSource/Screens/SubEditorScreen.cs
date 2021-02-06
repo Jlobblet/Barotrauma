@@ -1,4 +1,4 @@
-﻿using Barotrauma.Extensions;
+using Barotrauma.Extensions;
 using Barotrauma.Items.Components;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -33,6 +33,18 @@ namespace Barotrauma
             Default,
             Wiring
         }
+
+        public enum WarningType
+        {
+            NoWaypoints,
+            NoHulls,
+            DisconnectedVents,
+            NoHumanSpawnpoints,
+            NoCargoSpawnpoints,
+            NoBallastTag,
+            NonLinkedGaps,
+            TooManyLights
+        }
         
         public static Vector2 MouseDragStart = Vector2.Zero;
 
@@ -59,6 +71,7 @@ namespace Barotrauma
 
         private bool entityMenuOpen = true;
         private float entityMenuOpenState = 1.0f;
+        private string lastFilter;
         public GUIComponent EntityMenu;
         private GUITextBox entityFilterBox;
         private GUIListBox entityList;
@@ -85,10 +98,36 @@ namespace Barotrauma
         private GUIFrame previouslyUsedPanel;
         private GUIListBox previouslyUsedList;
 
+        private GUIFrame undoBufferPanel;
+        private GUIListBox undoBufferList;
+
         private GUIDropDown linkedSubBox;
 
         private static GUIComponent autoSaveLabel;
         private static int maxAutoSaves = GameSettings.MaximumAutoSaves;
+
+        public static readonly object ItemAddMutex = new object(), ItemRemoveMutex = new object();
+
+        public static bool TransparentWiringMode = true;
+
+        private static object bulkItemBufferinUse;
+
+        public static object BulkItemBufferInUse
+        {
+            get => bulkItemBufferinUse;
+            set
+            {
+                if (value != bulkItemBufferinUse && bulkItemBufferinUse != null)
+                {
+                    CommitBulkItemBuffer();
+                }
+
+                bulkItemBufferinUse = value;
+            }
+        }
+        public static List<AddOrDeleteCommand> BulkItemBuffer = new List<AddOrDeleteCommand>();
+
+        public static List<WarningType> SuppressedWarnings = new List<WarningType>();
 
         //a Character used for picking up and manipulating items
         private Character dummyCharacter;
@@ -109,11 +148,16 @@ namespace Barotrauma
         /// </summary>
         private Vector2 oldItemPosition;
 
+        /// <summary>
+        /// Global undo/redo state for the sub editor and a selector index for it
+        /// <see cref="Command"/>
+        /// </summary>
+        public static readonly List<Command> Commands = new List<Command>();
+        private static int commandIndex;
+
         private GUIFrame wiringToolPanel;
 
         private DateTime editorSelectedTime;
-
-        private const string containerDeleteTag = "containerdelete";
 
         private GUIImage previewImage;
         private GUILayoutGroup previewImageButtonHolder;
@@ -172,7 +216,7 @@ namespace Barotrauma
             {
                 if (buoyancyVol / selectedVol < 1.0f)
                 {
-                    retVal += " (" + TextManager.GetWithVariable("OptimalBallastLevel", "[value]", (buoyancyVol / selectedVol).ToString("0.000")) + ")";
+                    retVal += " (" + TextManager.GetWithVariable("OptimalBallastLevel", "[value]", (buoyancyVol / selectedVol).ToString("0.0000")) + ")";
                 }
                 else
                 {
@@ -273,6 +317,7 @@ namespace Barotrauma
                 OnClicked = (btn, userData) =>
                 {
                     previouslyUsedPanel.Visible = false;
+                    undoBufferPanel.Visible = false;
                     showEntitiesPanel.Visible = !showEntitiesPanel.Visible;
                     showEntitiesPanel.RectTransform.AbsoluteOffset = new Point(Math.Max(Math.Max(btn.Rect.X, entityCountPanel.Rect.Right), saveAssemblyFrame.Rect.Right), TopPanel.Rect.Height);
                     return true;
@@ -285,8 +330,22 @@ namespace Barotrauma
                 OnClicked = (btn, userData) =>
                 {
                     showEntitiesPanel.Visible = false;
+                    undoBufferPanel.Visible = false;
                     previouslyUsedPanel.Visible = !previouslyUsedPanel.Visible;
                     previouslyUsedPanel.RectTransform.AbsoluteOffset = new Point(Math.Max(Math.Max(btn.Rect.X, entityCountPanel.Rect.Right), saveAssemblyFrame.Rect.Right), TopPanel.Rect.Height);
+                    return true;
+                }
+            };
+
+            var undoBufferButton = new GUIButton(new RectTransform(new Vector2(0.9f, 0.9f), paddedTopPanel.RectTransform, scaleBasis: ScaleBasis.BothHeight), "", style: "UndoHistoryButton")
+            {
+                ToolTip = TextManager.Get("Editor.UndoHistoryButton"),
+                OnClicked = (btn, userData) =>
+                {
+                    showEntitiesPanel.Visible = false;
+                    previouslyUsedPanel.Visible = false;
+                    undoBufferPanel.Visible = !undoBufferPanel.Visible;
+                    undoBufferPanel.RectTransform.AbsoluteOffset = new Point(Math.Max(Math.Max(btn.Rect.X, entityCountPanel.Rect.Right), saveAssemblyFrame.Rect.Right), TopPanel.Rect.Height);
                     return true;
                 }
             };
@@ -404,6 +463,45 @@ namespace Barotrauma
                 ScrollBarVisible = true,
                 OnSelected = SelectPrefab
             };
+
+            //-----------------------------------------------
+
+            undoBufferPanel = new GUIFrame(new RectTransform(new Vector2(0.15f, 0.2f), GUI.Canvas) { MinSize = new Point(200, 200) })
+            {
+                Visible = false
+            };
+            undoBufferList = new GUIListBox(new RectTransform(new Vector2(0.925f, 0.9f), undoBufferPanel.RectTransform, Anchor.Center))
+            {
+                ScrollBarVisible = true,
+                OnSelected = (_, userData) =>
+                {
+                    int index;
+                    if (userData is Command command)
+                    {
+                        index = Commands.IndexOf(command);
+                    }
+                    else
+                    {
+                        index = -1;
+                    }
+
+                    int diff = index- commandIndex;
+                    int amount = Math.Abs(diff);
+
+                    if (diff >= 0)
+                    {
+                        Redo(amount + 1);
+                    }
+                    else
+                    {
+                        Undo(amount - 1);
+                    }
+                    
+                    return true;
+                }
+            };
+            
+            UpdateUndoHistoryPanel();
 
             //-----------------------------------------------
 
@@ -551,35 +649,33 @@ namespace Barotrauma
                 return Structure.WallList.Count.ToString();
             };
             
-            var lightCountText = new GUITextBlock(new RectTransform(new Vector2(0.75f, 0.0f), paddedEntityCountPanel.RectTransform), TextManager.Get("SubEditorLights"), 
+            var lightCountLabel = new GUITextBlock(new RectTransform(new Vector2(0.75f, 0.0f), paddedEntityCountPanel.RectTransform), TextManager.Get("SubEditorLights"), 
                 textAlignment: Alignment.CenterLeft, font: GUI.SmallFont);
-            var lightCount = new GUITextBlock(new RectTransform(new Vector2(0.33f, 1.0f), lightCountText.RectTransform, Anchor.TopRight, Pivot.TopLeft), "", textAlignment: Alignment.CenterRight);
-            lightCount.TextGetter = () =>
+            var lightCountText = new GUITextBlock(new RectTransform(new Vector2(0.33f, 1.0f), lightCountLabel.RectTransform, Anchor.TopRight, Pivot.TopLeft), "", textAlignment: Alignment.CenterRight);
+            lightCountText.TextGetter = () =>
             {
-                int disabledItemLightCount = 0;
+                int lightCount = 0;
                 foreach (Item item in Item.ItemList)
                 {
-                    if (item.ParentInventory == null) { continue; }
-                    disabledItemLightCount += item.GetComponents<LightComponent>().Count();
+                    if (item.ParentInventory != null) { continue; }
+                    lightCount += item.GetComponents<LightComponent>().Count();
                 }
-                int count = GameMain.LightManager.Lights.Count() - disabledItemLightCount;
-                lightCount.TextColor = ToolBox.GradientLerp(count / 250.0f, GUI.Style.Green, GUI.Style.Orange, GUI.Style.Red);
-                return count.ToString();
+                lightCountText.TextColor = ToolBox.GradientLerp(lightCount / 250.0f, GUI.Style.Green, GUI.Style.Orange, GUI.Style.Red);
+                return lightCount.ToString();
             };
-            var shadowCastingLightCountText = new GUITextBlock(new RectTransform(new Vector2(0.75f, 0.0f), paddedEntityCountPanel.RectTransform), TextManager.Get("SubEditorShadowCastingLights"), 
+            var shadowCastingLightCountLabel = new GUITextBlock(new RectTransform(new Vector2(0.75f, 0.0f), paddedEntityCountPanel.RectTransform), TextManager.Get("SubEditorShadowCastingLights"), 
                 textAlignment: Alignment.CenterLeft, font: GUI.SmallFont, wrap: true);
-            var shadowCastingLightCount = new GUITextBlock(new RectTransform(new Vector2(0.33f, 1.0f), shadowCastingLightCountText.RectTransform, Anchor.TopRight, Pivot.TopLeft), "", textAlignment: Alignment.CenterRight);
-            shadowCastingLightCount.TextGetter = () =>
+            var shadowCastingLightCountText = new GUITextBlock(new RectTransform(new Vector2(0.33f, 1.0f), shadowCastingLightCountLabel.RectTransform, Anchor.TopRight, Pivot.TopLeft), "", textAlignment: Alignment.CenterRight);
+            shadowCastingLightCountText.TextGetter = () =>
             {
-                int disabledItemLightCount = 0;
+                int lightCount = 0;
                 foreach (Item item in Item.ItemList)
                 {
-                    if (item.ParentInventory == null) { continue; }
-                    disabledItemLightCount += item.GetComponents<LightComponent>().Count();
+                    if (item.ParentInventory != null) { continue; }
+                    lightCount += item.GetComponents<LightComponent>().Count(l => l.CastShadows);
                 }
-                int count = GameMain.LightManager.Lights.Count(l => l.CastShadows) - disabledItemLightCount;
-                shadowCastingLightCount.TextColor = ToolBox.GradientLerp(count / 60.0f, GUI.Style.Green, GUI.Style.Orange, GUI.Style.Red);
-                return count.ToString();
+                shadowCastingLightCountText.TextColor = ToolBox.GradientLerp(lightCount / 60.0f, GUI.Style.Green, GUI.Style.Orange, GUI.Style.Red);
+                return lightCount.ToString();
             };
             entityCountPanel.RectTransform.NonScaledSize =
                 new Point(
@@ -658,7 +754,13 @@ namespace Barotrauma
             var filterText = new GUITextBlock(new RectTransform(new Vector2(0.1f, 1.0f), entityMenuTop.RectTransform), TextManager.Get("serverlog.filter"), font: GUI.SubHeadingFont);
             filterText.RectTransform.MaxSize = new Point((int)(filterText.TextSize.X * 1.5f), int.MaxValue);
             entityFilterBox = new GUITextBox(new RectTransform(new Vector2(0.17f, 1.0f), entityMenuTop.RectTransform), font: GUI.Font, createClearButton: true);
-            entityFilterBox.OnTextChanged += (textBox, text) => { FilterEntities(text); return true; };
+            entityFilterBox.OnTextChanged += (textBox, text) =>
+            {
+                if (text == lastFilter) { return true; }
+                lastFilter = text;
+                FilterEntities(text); 
+                return true;
+            };
 
             //spacing
             new GUIFrame(new RectTransform(new Vector2(0.075f, 1.0f), entityMenuTop.RectTransform), style: null);
@@ -885,6 +987,7 @@ namespace Barotrauma
         {
             base.Select();
 
+            GUI.PreventPauseMenuToggle = false;
             if (!Directory.Exists(autoSavePath))
             {
                 System.IO.DirectoryInfo e = Directory.CreateDirectory(autoSavePath);
@@ -914,15 +1017,9 @@ namespace Barotrauma
             
             GameMain.LightManager.AmbientLight = 
                 Level.Loaded?.GenerationParams?.AmbientLightColor ??
-                LevelGenerationParams.LevelParams?.FirstOrDefault()?.AmbientLightColor ??
-                new Color(20, 20, 20, 255);
+                new Color(3, 3, 3, 3);
 
             UpdateEntityList();
-            if (!wasSelectedBefore)
-            {
-                OpenEntityMenu(MapEntityCategory.Structure);
-                wasSelectedBefore = true;
-            }
 
             isAutoSaving = false;
             if (!wasSelectedBefore)
@@ -1043,6 +1140,7 @@ namespace Barotrauma
 
             MapEntity.DeselectAll();
             MapEntity.SelectionGroups.Clear();
+            ClearUndoBuffer();
 
             SetMode(Mode.Default);
 
@@ -1062,147 +1160,15 @@ namespace Barotrauma
                 GameMain.World.ProcessChanges();
             }
 
-            if (GUIMessageBox.MessageBoxes.Any(mbox => (mbox as GUIMessageBox)?.Tag == containerDeleteTag))
-            {
-                for (int i = 0; i < GUIMessageBox.MessageBoxes.Count; i++)
-                {
-                    GUIMessageBox box = GUIMessageBox.MessageBoxes[i] as GUIMessageBox;
-                    if (box != null && box.Tag != containerDeleteTag) continue;
-                    box?.Close();
-                    i--; // Take into account the message boxes removing themselves from the list when closed
-                }
-            }
             ClearFilter();
-        }
-
-        public void HandleContainerContentsDeletion(Item itemToDelete, Inventory itemInventory)
-        {
-            string itemNames = string.Empty;
-
-            foreach (Item item in itemInventory.Items)
-            {
-                if (item == null) continue;
-                itemNames += item.Name + "\n";
-            }
-
-            if (itemNames.Length > 0)
-            {
-                // Multiple prompts open
-                if (GUIMessageBox.MessageBoxes.Any(mbox => (mbox as GUIMessageBox)?.Tag == containerDeleteTag))
-                {
-                    var msgBox = new GUIMessageBox(itemToDelete.Name, TextManager.Get("DeletingContainerWithItems") + itemNames, new[] { TextManager.Get("Yes"), TextManager.Get("No"), TextManager.Get("YesToAll"), TextManager.Get("NoToAll") }, tag: containerDeleteTag);
-
-                    // Yes
-                    msgBox.Buttons[0].OnClicked = (btn, userdata) =>
-                    {
-                        itemInventory.DeleteAllItems();
-                        msgBox.Close();
-                        return true;
-                    };
-
-                    // No
-                    msgBox.Buttons[1].OnClicked = (btn, userdata) =>
-                    {
-                        if (Selected == GameMain.SubEditorScreen)
-                        {
-                            foreach (Item item in itemInventory.Items)
-                            {
-                                item?.Drop(null);
-                            }
-                        }
-                        else // If current screen is not subeditor, delete anyway to avoid lingering objects
-                        {
-                            itemInventory.DeleteAllItems();
-                        }
-
-                        msgBox.Close();
-                        return true;
-                    };
-
-                    // Yes to All
-                    msgBox.Buttons[2].OnClicked = (btn, userdata) =>
-                    {
-                        for (int i = 0; i < GUIMessageBox.MessageBoxes.Count; i++)
-                        {
-                            GUIMessageBox box = GUIMessageBox.MessageBoxes[i] as GUIMessageBox;
-                            if (box?.Tag != msgBox.Tag || box == msgBox) continue;
-                            GUIButton button = box?.Buttons[0];
-                            button?.OnClicked(button, button.UserData);
-                            i--; // Take into account the message boxes removing themselves from the list when closed
-                        }
-
-                        itemInventory.DeleteAllItems();
-                        msgBox.Close();
-                        return true;
-                    };
-
-                    // No to all
-                    msgBox.Buttons[3].OnClicked = (btn, userdata) =>
-                    {
-                        for (int i = 0; i < GUIMessageBox.MessageBoxes.Count; i++)
-                        {
-                            GUIMessageBox box = GUIMessageBox.MessageBoxes[i] as GUIMessageBox;
-                            if (box?.Tag != msgBox.Tag || box == msgBox) continue;
-                            GUIButton button = box?.Buttons[1];
-                            button?.OnClicked(button, button.UserData);
-                            i--; // Take into account the message boxes removing themselves from the list when closed
-                        }
-
-                        if (Selected == GameMain.SubEditorScreen)
-                        {
-                            foreach (Item item in itemInventory.Items)
-                            {
-                                item?.Drop(null);
-                            }
-                        }
-                        else // If current screen is not subeditor, delete anyway to avoid lingering objects
-                        {
-                            itemInventory.DeleteAllItems();
-                        }
-
-                        msgBox.Close();
-                        return true;
-                    };
-                }
-                else // Single prompt
-                {
-                    var msgBox = new GUIMessageBox(itemToDelete.Name, TextManager.Get("DeletingContainerWithItems") + itemNames, new[] { TextManager.Get("Yes"), TextManager.Get("No") }, tag: containerDeleteTag);
-
-                    // Yes
-                    msgBox.Buttons[0].OnClicked = (btn, userdata) =>
-                    {
-                        itemInventory.DeleteAllItems();
-                        msgBox.Close();
-                        return true;
-                    };
-
-                    // No
-                    msgBox.Buttons[1].OnClicked = (btn, userdata) =>
-                    {
-                        if (Selected == GameMain.SubEditorScreen)
-                        {
-                            foreach (Item item in itemInventory.Items)
-                            {
-                                item?.Drop(null);
-                            }
-                        }
-                        else // If current screen is not subeditor, delete anyway to avoid lingering objects
-                        {
-                            itemInventory.DeleteAllItems();
-                        }
-
-                        msgBox.Close();
-                        return true;
-                    };
-                }
-            }
         }
 
         private void CreateDummyCharacter()
         {
             if (dummyCharacter != null) RemoveDummyCharacter();
 
-            dummyCharacter = Character.Create(CharacterPrefab.HumanSpeciesName, Vector2.Zero, "", hasAi: false);
+            dummyCharacter = Character.Create(CharacterPrefab.HumanSpeciesName, Vector2.Zero, "", id: Entity.RespawnManagerID, hasAi: false);
+            dummyCharacter.Info.Name = "Galldren";
 
             //make space for the entity menu
             for (int i = 0; i < dummyCharacter.Inventory.SlotPositions.Length; i++)
@@ -1246,7 +1212,7 @@ namespace Barotrauma
 
                             CrossThread.RequestExecutionOnMainThread(() =>
                             {
-                                if (AutoSaveInfo?.Root == null) { return; }
+                                if (AutoSaveInfo?.Root == null || Submarine.MainSub?.Info == null) { return; }
 
                                 int saveCount = AutoSaveInfo.Root.Elements().Count();
                                 while (AutoSaveInfo.Root.Elements().Count() > maxAutoSaves)
@@ -1653,14 +1619,14 @@ namespace Barotrauma
             new GUITextBlock(new RectTransform(new Vector2(0.4f, 1f), subTypeContainer.RectTransform), TextManager.Get("submarinetype"));
             var subTypeDropdown = new GUIDropDown(new RectTransform(new Vector2(0.6f, 1f), subTypeContainer.RectTransform));
             subTypeContainer.RectTransform.MinSize = new Point(0, subTypeContainer.RectTransform.Children.Max(c => c.MinSize.Y));
-            subTypeDropdown.AddItem(TextManager.Get("submarinetype.player"), SubmarineType.Player);
-            subTypeDropdown.AddItem(TextManager.Get("submarinetype.outpostmodule"), SubmarineType.OutpostModule);
-            subTypeDropdown.AddItem(TextManager.Get("submarinetype.outpost"), SubmarineType.Outpost);
-            subTypeDropdown.AddItem(TextManager.Get("submarinetype.wreck"), SubmarineType.Wreck);
+            foreach (SubmarineType subType in Enum.GetValues(typeof(SubmarineType)))
+            {
+                subTypeDropdown.AddItem(TextManager.Get("submarinetype."+subType.ToString().ToLowerInvariant()), subType);
+            }
 
-                //---------------------------------------
+            //---------------------------------------
 
-                var outpostSettingsContainer = new GUILayoutGroup(new RectTransform(new Vector2(1.0f, 0.15f), leftColumn.RectTransform))
+            var outpostSettingsContainer = new GUILayoutGroup(new RectTransform(new Vector2(1.0f, 0.15f), leftColumn.RectTransform))
             {
                 IgnoreLayoutGroups = true,
                 CanBeFocused = true,
@@ -1711,10 +1677,6 @@ namespace Barotrauma
             };
             outpostModuleGroup.RectTransform.MinSize = new Point(0, outpostModuleGroup.RectTransform.Children.Max(c => c.MinSize.Y));
 
-
-
-
-
             // module flags ---------------------
 
             var allowAttachGroup = new GUILayoutGroup(new RectTransform(new Vector2(.975f, 0.1f), outpostSettingsContainer.RectTransform), isHorizontal: true, childAnchor: Anchor.CenterLeft);
@@ -1750,17 +1712,6 @@ namespace Barotrauma
                 return true;
             };
             allowAttachGroup.RectTransform.MinSize = new Point(0, allowAttachGroup.RectTransform.Children.Max(c => c.MinSize.Y));
-
-
-
-
-
-
-
-
-
-
-
 
             // location types ---------------------
 
@@ -1904,6 +1855,10 @@ namespace Barotrauma
                     Submarine.MainSub.Info.Price = numberInput.IntValue;
                 }
             };
+            if (Submarine.MainSub?.Info != null)
+            {
+                Submarine.MainSub.Info.Price = Math.Max(Submarine.MainSub.Info.Price, basePrice);
+            }
 
             if (!Submarine.MainSub.Info.HasTag(SubmarineTag.Shuttle))
             {
@@ -2460,7 +2415,6 @@ namespace Barotrauma
                 int min = Math.Min(6, AutoSaveInfo.Root.Elements().Count());
                 var loadAutoSave = new GUIDropDown(new RectTransform(Vector2.One,  deleteButtonHolder.RectTransform, Anchor.BottomCenter), TextManager.Get("LoadAutoSave"), elementCount: min)
                 {
-                    Enabled = File.Exists(Path.Combine(SubmarineInfo.SavePath, ".AutoSaves", "AutoSave.sub")),
                     ToolTip = TextManager.Get("LoadAutoSaveTooltip"),
                     UserData = "loadautosave",
                     OnSelected = (button, o) =>
@@ -2609,7 +2563,7 @@ namespace Barotrauma
             var selectedSub = new Submarine(selectedSubInfo);
             Submarine.MainSub = selectedSub;
             Submarine.MainSub.UpdateTransform(interpolate: false);
-            
+            ClearUndoBuffer();
             CreateDummyCharacter();
 
             string name = Submarine.MainSub.Info.Name;
@@ -2717,7 +2671,7 @@ namespace Barotrauma
 
             foreach (GUIComponent child in entityList.Content.Children)
             {
-                child.Visible = !entityCategory.HasValue || ((MapEntityPrefab) child.UserData).Category == entityCategory;
+                child.Visible = !entityCategory.HasValue || ((MapEntityPrefab) child.UserData).Category.HasFlag(entityCategory);
                 if (child.Visible && dummyCharacter?.SelectedConstruction?.OwnInventory != null)
                 {
                     child.Visible = child.UserData is MapEntityPrefab item && IsItemPrefab(item);
@@ -2790,6 +2744,7 @@ namespace Barotrauma
 
             MapEntity.DeselectAll();
             MapEntity.FilteredSelectedList.Clear();
+            ClearUndoBuffer();
             
             CreateDummyCharacter();
             if (newMode == Mode.Wiring)
@@ -2841,9 +2796,15 @@ namespace Barotrauma
             if (PlayerInput.IsShiftDown())
             {
                 new GUITextBlock(new RectTransform(Point.Zero, contextMenu.Content.RectTransform),
-                    TextManager.Get("CharacterEditor.EditBackgroundColor"), font: GUI.SmallFont)
+                    TextManager.Get("SubEditor.EditBackgroundColor"), font: GUI.SmallFont)
                 {
                     UserData = "bgcolor"
+                };
+
+                new GUITextBlock(new RectTransform(Point.Zero, contextMenu.Content.RectTransform),
+                    TextManager.Get("SubEditor.ToggleTransparency"), font: GUI.SmallFont)
+                {
+                    UserData = "transparency"
                 };
 
                 new GUITextBlock(new RectTransform(Point.Zero, contextMenu.Content.RectTransform),
@@ -2921,8 +2882,11 @@ namespace Barotrauma
                     case "bgcolor":
                         CreateBackgroundColorPicker();
                         break;
+                    case "transparency":
+                        TransparentWiringMode = !TransparentWiringMode;
+                        break;
                     case "selectsame":
-                        IEnumerable<MapEntity> matching = MapEntity.mapEntityList.Where(e => targets.Any(t => t.prefab.Identifier == e.prefab.Identifier) && !MapEntity.SelectedList.Contains(e));
+                        IEnumerable<MapEntity> matching = MapEntity.mapEntityList.Where(e => e.prefab != null && targets.Any(t => t.prefab.Identifier == e.prefab.Identifier) && !MapEntity.SelectedList.Contains(e));
                         MapEntity.SelectedList.AddRange(matching);
                         break;
                     case "copy":
@@ -2935,7 +2899,8 @@ namespace Barotrauma
                         MapEntity.Paste(cam.ScreenToWorld(contextMenu.Rect.Location.ToVector2()));
                         break;
                     case "delete":
-                        targets.ForEach(me => { me.Remove(); });
+                        StoreCommand(new AddOrDeleteCommand(targets, true));
+                        targets.ForEach(me => { if (!me.Removed) { me.Remove(); }});
                         break;
                     case "open" when target != null:
                         OpenItem(target);
@@ -3234,7 +3199,13 @@ namespace Barotrauma
                                     }
                                 }
                             });
-                            GUI.PlayUISound(spawnedItem ? GUISoundType.PickItem : GUISoundType.PickItemFail);
+
+                            List<MapEntity> placedEntities = itemInstance.Where(it => !it.Removed).Cast<MapEntity>().ToList();
+                            if (placedEntities.Any())
+                            {
+                                StoreCommand(new AddOrDeleteCommand(placedEntities, false));
+                            }
+                            SoundPlayer.PlayUISound(spawnedItem ? GUISoundType.PickItem : GUISoundType.PickItemFail);
                             break;
                         }
                         case ItemPrefab itemPrefab when PlayerInput.IsShiftDown():
@@ -3243,12 +3214,17 @@ namespace Barotrauma
                             if (!inv.TryPutItem(item, dummyCharacter))
                             {
                                 // We failed, remove the item so it doesn't stay at x:0,y:0
-                                GUI.PlayUISound(GUISoundType.PickItemFail);
+                                SoundPlayer.PlayUISound(GUISoundType.PickItemFail);
                                 item.Remove();
                             }
                             else
                             {
-                                GUI.PlayUISound(GUISoundType.PickItem);
+                                SoundPlayer.PlayUISound(GUISoundType.PickItem);
+                            }
+
+                            if (!item.Removed)
+                            {
+                                StoreCommand(new AddOrDeleteCommand(new List<MapEntity> { item }, false));
                             }
                             break;
                         }
@@ -3257,7 +3233,7 @@ namespace Barotrauma
                         {
                             // Place the item into our hands
                             DraggedItemPrefab = (MapEntityPrefab) obj;
-                            GUI.PlayUISound(GUISoundType.PickItem);
+                            SoundPlayer.PlayUISound(GUISoundType.PickItem);
                             break;
                         }
                     }
@@ -3265,7 +3241,7 @@ namespace Barotrauma
             }
             else
             {
-                GUI.PlayUISound(GUISoundType.PickItem);
+                SoundPlayer.PlayUISound(GUISoundType.PickItem);
                 MapEntityPrefab.SelectPrefab(obj);
             }
             
@@ -3611,6 +3587,7 @@ namespace Barotrauma
             EntityMenu.AddToGUIUpdateList();
             showEntitiesPanel.AddToGUIUpdateList();
             previouslyUsedPanel.AddToGUIUpdateList();
+            undoBufferPanel.AddToGUIUpdateList();
             entityCountPanel.AddToGUIUpdateList();
             TopPanel.AddToGUIUpdateList();
 
@@ -3655,15 +3632,115 @@ namespace Barotrauma
         /// </summary>
         private bool IsMouseOnEditorGUI()
         {
-            if (GUI.MouseOn == null)
-            {
-                return false;
-            }
+            if (GUI.MouseOn == null) { return false; }
 
             return (EntityMenu?.MouseRect.Contains(PlayerInput.MousePosition) ?? false)
                    || (entityCountPanel?.MouseRect.Contains(PlayerInput.MousePosition) ?? false)
                    || (MapEntity.EditingHUD?.MouseRect.Contains(PlayerInput.MousePosition) ?? false) 
                    || (TopPanel?.MouseRect.Contains(PlayerInput.MousePosition) ?? false);
+        }
+
+        private static void Redo(int amount)
+        {
+            for (int i = 0; i < amount; i++)
+            {
+                if (commandIndex < Commands.Count)
+                {
+                    Command command = Commands[commandIndex++];
+                    command.Execute();
+                }
+            }
+            GameMain.SubEditorScreen.UpdateUndoHistoryPanel();
+        }
+
+        private static void Undo(int amount)
+        {
+            for (int i = 0; i < amount; i++)
+            {
+                if (commandIndex > 0)
+                {
+                    Command command = Commands[--commandIndex];
+                    command.UnExecute();
+                }
+            }
+            GameMain.SubEditorScreen.UpdateUndoHistoryPanel();
+        }
+
+        private static void ClearUndoBuffer()
+        {
+            SerializableEntityEditor.PropertyChangesActive = false;
+            SerializableEntityEditor.CommandBuffer = null;
+            Commands.ForEach(cmd => cmd.Cleanup());
+            Commands.Clear();
+            commandIndex = 0;
+            GameMain.SubEditorScreen.UpdateUndoHistoryPanel();
+        }
+
+        public static void StoreCommand(Command command)
+        {
+            if (commandIndex != Commands.Count)
+            {
+                Commands.RemoveRange(commandIndex, Commands.Count - commandIndex);
+            }
+            Commands.Add(command);
+            commandIndex++;
+
+            // Start removing old commands
+            if (Commands.Count > Math.Clamp(GameSettings.SubEditorMaxUndoBuffer, 1, 10240))
+            {
+                Commands.First()?.Cleanup();
+                Commands.RemoveRange(0, 1);
+                commandIndex = Commands.Count;
+            }
+
+            GameMain.SubEditorScreen.UpdateUndoHistoryPanel();
+        }
+
+        public void UpdateUndoHistoryPanel()
+        {
+            if (undoBufferPanel == null) { return; }
+
+            undoBufferList.Content.Children.ForEachMod(component =>
+            {
+                undoBufferList.Content.RemoveChild(component);
+            });
+
+            for (int i = 0; i < Commands.Count; i++)
+            {
+                Command command = Commands[i];
+                string description = command.GetDescription();
+                CreateTextBlock(description, description, i + 1, command).RectTransform.SetAsFirstChild();
+            }
+
+            CreateTextBlock(TextManager.Get("undo.beginning"), TextManager.Get("undo.beginningtooltip"), 0, null);
+
+            GUITextBlock CreateTextBlock(string name, string description, int index, Command command)
+            {
+                return new GUITextBlock(new RectTransform(new Vector2(1.0f, 0.05f), undoBufferList.Content.RectTransform) { MinSize = new Point(0, 15) },
+                    ToolBox.LimitString(name, GUI.SmallFont, undoBufferList.Content.Rect.Width), font: GUI.SmallFont, textColor: index == commandIndex ? GUI.Style.Green : (Color?) null)
+                {
+                    UserData = command,
+                    ToolTip = description
+                };
+            }
+        }
+
+        private static void CommitBulkItemBuffer()
+        {
+            if (BulkItemBuffer.Any())
+            {
+                AddOrDeleteCommand master = BulkItemBuffer[0];
+                for (int i = 1; i < BulkItemBuffer.Count; i++)
+                {
+                    AddOrDeleteCommand command = BulkItemBuffer[i];
+                    command.MergeInto(master);
+                }
+
+                StoreCommand(master);
+                BulkItemBuffer.Clear();
+            }
+
+            bulkItemBufferinUse = null;
         }
 
         /// <summary>
@@ -3745,7 +3822,32 @@ namespace Barotrauma
                     }
                 }
             }
-            
+
+            if (undoBufferPanel.Visible)
+            {
+                undoBufferList.Deselect();
+            }
+
+            if (GUI.KeyboardDispatcher.Subscriber == null 
+                || MapEntity.EditingHUD != null 
+                && GUI.KeyboardDispatcher.Subscriber is GUIComponent sub 
+                && MapEntity.EditingHUD.Children.Contains(sub))
+            {
+                if (PlayerInput.IsCtrlDown() && !WiringMode)
+                {
+                    if (PlayerInput.KeyHit(Keys.Z))
+                    {
+                        // Ctrl+Shift+Z redos while Ctrl+Z undos
+                        if (PlayerInput.IsShiftDown()) { Redo(1); } else { Undo(1); }
+                    }
+                    
+                    // ctrl+Y redo
+                    if (PlayerInput.KeyHit(Keys.Y))
+                    {
+                        Redo(1);
+                    }
+                }
+            }
 
             if (GUI.KeyboardDispatcher.Subscriber == null)
             {
@@ -3870,6 +3972,11 @@ namespace Barotrauma
                 CloseItem();
             }
 
+            if (lightingEnabled)
+            {
+                GameMain.LightManager?.Update((float)deltaTime);
+            }
+
             if (contextMenu != null)
             {
                 Rectangle expandedRect = contextMenu.Rect;
@@ -3965,7 +4072,7 @@ namespace Barotrauma
 
             // Deposit item from our "infinite stack" into inventory slots
             var inv = dummyCharacter?.SelectedConstruction?.OwnInventory;
-            if (inv?.slots != null)
+            if (inv?.slots != null && !PlayerInput.IsCtrlDown())
             {
                 var dragginMouse = MouseDragStart != Vector2.Zero && Vector2.Distance(PlayerInput.MousePosition, MouseDragStart) >= GUI.Scale * 20;
                 
@@ -4019,9 +4126,15 @@ namespace Barotrauma
                                     newItem.Remove();
                                 }
 
+                                if (!newItem.Removed)
+                                {
+                                    BulkItemBufferInUse = ItemAddMutex;
+                                    BulkItemBuffer.Add(new AddOrDeleteCommand(new List<MapEntity> { newItem }, false));
+                                }
+
                                 if (!dragginMouse)
                                 {
-                                    GUI.PlayUISound(spawnedItem ? GUISoundType.PickItem : GUISoundType.PickItemFail);
+                                    SoundPlayer.PlayUISound(spawnedItem ? GUISoundType.PickItem : GUISoundType.PickItemFail);
                                 }
                             }
                         }
@@ -4083,12 +4196,30 @@ namespace Barotrauma
                                         }
                                     }
                                 }
+
+                                List<MapEntity> placedEntities = itemInstance.Where(it => !it.Removed).Cast<MapEntity>().ToList();
+                                if (placedEntities.Any())
+                                {
+                                    BulkItemBufferInUse = ItemAddMutex;
+                                    BulkItemBuffer.Add(new AddOrDeleteCommand(placedEntities, false));
+                                }
                             }
                         }
-                        GUI.PlayUISound(spawnedItems ? GUISoundType.PickItem : GUISoundType.PickItemFail);
+
+                        SoundPlayer.PlayUISound(spawnedItems ? GUISoundType.PickItem : GUISoundType.PickItemFail);
                         break;
                     }
                 }
+            }
+
+            if (PlayerInput.PrimaryMouseButtonReleased() && BulkItemBufferInUse != null)
+            {
+                CommitBulkItemBuffer();
+            }
+
+            if (SerializableEntityEditor.PropertyChangesActive && (SerializableEntityEditor.NextCommandPush < DateTime.Now || MapEntity.EditingHUD == null))
+            {
+                SerializableEntityEditor.CommitCommandBuffer();
             }
 
             // Update our mouse dragging state so we can easily slide thru slots while holding the mouse button down to place lots of items
@@ -4224,7 +4355,7 @@ namespace Barotrauma
             cam.UpdateTransform();
             if (lightingEnabled)
             {
-                GameMain.LightManager.UpdateLightMap(graphics, spriteBatch, cam);
+                GameMain.LightManager.RenderLightMap(graphics, spriteBatch, cam);
             }
 
             foreach (Submarine sub in Submarine.Loaded)
@@ -4273,8 +4404,17 @@ namespace Barotrauma
             Submarine.DrawFront(spriteBatch, editing: true, e => ShowThalamus || !(e.prefab?.Category.HasFlag(MapEntityCategory.Thalamus) ?? false));
             if (!WiringMode && !IsMouseOnEditorGUI())
             {
-                MapEntityPrefab.Selected?.DrawPlacing(spriteBatch, cam);                
+                MapEntityPrefab.Selected?.DrawPlacing(spriteBatch, cam);
                 MapEntity.DrawSelecting(spriteBatch, cam);
+            }
+            if (dummyCharacter != null && WiringMode)
+            {
+                for (int i = 0; i < dummyCharacter.SelectedItems.Length; i++)
+                {
+                    if (dummyCharacter.SelectedItems[i] == null) { continue; }
+                    if (i > 0 && dummyCharacter.SelectedItems[0] == dummyCharacter.SelectedItems[i]) { continue; }
+                    dummyCharacter.SelectedItems[i].Draw(spriteBatch, editing: false, back: true);
+                }
             }
             spriteBatch.End();
 
@@ -4382,6 +4522,7 @@ namespace Barotrauma
             stream.Dispose();
         }
 
-        public static bool IsSubEditor() { return Screen.Selected is SubEditorScreen && !Submarine.Unloading;  }
+        public static bool IsSubEditor() => Screen.Selected is SubEditorScreen && !Submarine.Unloading;
+        public static bool IsWiringMode() => Screen.Selected == GameMain.SubEditorScreen && GameMain.SubEditorScreen.WiringMode && !Submarine.Unloading;
     }
 }

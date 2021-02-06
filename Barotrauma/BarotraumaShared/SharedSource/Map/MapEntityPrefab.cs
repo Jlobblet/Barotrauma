@@ -254,6 +254,16 @@ namespace Barotrauma
             {
                 name = name.ToLowerInvariant();
             }
+
+            //try to search based on identifier first
+            if (string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(identifier))
+            {
+                foreach (MapEntityPrefab prefab in List)
+                {
+                    if (prefab.identifier == identifier) { return prefab; }
+                }
+            }
+
             foreach (MapEntityPrefab prefab in List)
             {
                 if (identifier != null)
@@ -284,7 +294,7 @@ namespace Barotrauma
 
             if (showErrorMessages)
             {
-                DebugConsole.ThrowError("Failed to find a matching MapEntityPrefab (name: \"" + name + "\", identifier: \"" + identifier + "\").\n" + Environment.StackTrace);
+                DebugConsole.ThrowError("Failed to find a matching MapEntityPrefab (name: \"" + name + "\", identifier: \"" + identifier + "\").\n" + Environment.StackTrace.CleanupStackTrace());
             }
             return null;
         }

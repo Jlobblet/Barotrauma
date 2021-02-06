@@ -1,7 +1,5 @@
-﻿using Barotrauma.Items.Components;
-using Microsoft.Xna.Framework;
+﻿using Microsoft.Xna.Framework;
 using System;
-using System.Linq;
 using System.Text;
 
 namespace Barotrauma.Networking
@@ -14,19 +12,32 @@ namespace Barotrauma.Networking
 
             UInt16 ID = msg.ReadUInt16();
             ChatMessageType type = (ChatMessageType)msg.ReadByte();
-            string txt = "";
+            string txt;
 
-            int orderIndex = -1;
             Character orderTargetCharacter = null;
             Entity orderTargetEntity = null;
-            int orderOptionIndex = -1;
             OrderChatMessage orderMsg = null;
+            OrderTarget orderTargetPosition = null;
+            Order.OrderTargetType orderTargetType = Order.OrderTargetType.Entity;
+            int? wallSectionIndex = null;
             if (type == ChatMessageType.Order)
             {
-                orderIndex = msg.ReadByte();
+                int orderIndex = msg.ReadByte();
                 orderTargetCharacter = Entity.FindEntityByID(msg.ReadUInt16()) as Character;
                 orderTargetEntity = Entity.FindEntityByID(msg.ReadUInt16()) as Entity;
-                orderOptionIndex = msg.ReadByte();
+                int orderOptionIndex = msg.ReadByte();
+                orderTargetType = (Order.OrderTargetType)msg.ReadByte();
+                if (msg.ReadBoolean())
+                {
+                    var x = msg.ReadSingle();
+                    var y = msg.ReadSingle();
+                    var hull = Entity.FindEntityByID(msg.ReadUInt16()) as Hull;
+                    orderTargetPosition = new OrderTarget(new Vector2(x, y), hull, true);
+                }
+                else if (orderTargetType == Order.OrderTargetType.WallSection)
+                {
+                    wallSectionIndex = msg.ReadByte();
+                }
 
                 if (orderIndex < 0 || orderIndex >= Order.PrefabList.Count)
                 {
@@ -35,9 +46,12 @@ namespace Barotrauma.Networking
                     return;
                 }
 
-                Order order = Order.PrefabList[orderIndex];
-                string orderOption = orderOptionIndex < 0 || orderOptionIndex >= order.Options.Length ? "" : order.Options[orderOptionIndex];
-                orderMsg = new OrderChatMessage(order, orderOption, orderTargetEntity, orderTargetCharacter, c.Character);
+                Order orderPrefab = Order.PrefabList[orderIndex];
+                string orderOption = orderOptionIndex < 0 || orderOptionIndex >= orderPrefab.Options.Length ? "" : orderPrefab.Options[orderOptionIndex];
+                orderMsg = new OrderChatMessage(orderPrefab, orderOption, orderTargetPosition ?? orderTargetEntity as ISpatialEntity, orderTargetCharacter, c.Character)
+                {
+                    WallSectionIndex = wallSectionIndex
+                };
                 txt = orderMsg.Text;
             }
             else
@@ -114,20 +128,41 @@ namespace Barotrauma.Networking
 
             if (type == ChatMessageType.Order)
             {
-                if (c.Character == null || c.Character.SpeechImpediment >= 100.0f || c.Character.IsDead) return;
-
-                ChatMessageType messageType = CanUseRadio(orderMsg.Sender) ? ChatMessageType.Radio : ChatMessageType.Default;
-                if (orderMsg.Order.TargetAllCharacters)
+                if (c.Character == null || c.Character.SpeechImpediment >= 100.0f || c.Character.IsDead) { return; }
+                Order order = null;
+                if (orderMsg.Order.IsReport)
                 {
-                    //do nothing
+                    HumanAIController.ReportProblem(orderMsg.Sender, orderMsg.Order);
                 }
-                else if (orderTargetCharacter != null)
+                else if (orderTargetCharacter != null && !orderMsg.Order.TargetAllCharacters)
                 {
-                    orderTargetCharacter.SetOrder(
-                        new Order(orderMsg.Order.Prefab, orderTargetEntity, (orderTargetEntity as Item)?.Components.FirstOrDefault(ic => ic.GetType() == orderMsg.Order.ItemComponentType)),
-                            orderMsg.OrderOption, orderMsg.Sender);
+                    switch (orderTargetType)
+                    {
+                        case Order.OrderTargetType.Entity:
+                            order = new Order(orderMsg.Order.Prefab, orderTargetEntity, orderMsg.Order.Prefab?.GetTargetItemComponent(orderTargetEntity as Item), orderGiver: orderMsg.Sender);
+                            break;
+                        case Order.OrderTargetType.Position:
+                            order = new Order(orderMsg.Order.Prefab, orderTargetPosition, orderGiver: orderMsg.Sender);
+                            break;
+                    }
+                    if (order != null)
+                    {
+                        orderTargetCharacter.SetOrder(order, orderMsg.OrderOption, orderMsg.Sender);
+                    }
                 }
-
+                else if (orderMsg.Order.IsIgnoreOrder)
+                {
+                    switch (orderTargetType)
+                    {
+                        case Order.OrderTargetType.Entity:
+                            (orderTargetEntity as MapEntity)?.SetIgnoreByAI(orderMsg.Order.Identifier == "ignorethis");
+                            break;
+                        case Order.OrderTargetType.WallSection:
+                            if (!wallSectionIndex.HasValue) { break; }
+                            (orderTargetEntity as Structure)?.GetSection(wallSectionIndex.Value)?.SetIgnoreByAI(orderMsg.Order.Identifier == "ignorethis");
+                            break;
+                    }
+                }
                 GameMain.Server.SendOrderChatMessage(orderMsg);
             }
             else

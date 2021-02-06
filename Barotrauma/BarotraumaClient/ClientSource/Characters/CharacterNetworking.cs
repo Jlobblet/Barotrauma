@@ -1,4 +1,5 @@
 ﻿using Barotrauma.Extensions;
+using Barotrauma.Items.Components;
 using Barotrauma.Networking;
 using Microsoft.Xna.Framework;
 using System;
@@ -80,6 +81,10 @@ namespace Barotrauma
                     if (FocusedCharacter != null && 
                         FocusedCharacter.CampaignInteractionType != CampaignMode.InteractionType.None && 
                         newMem.states.HasFlag(InputNetFlags.Use))
+                    {
+                        newMem.interact = FocusedCharacter.ID;
+                    }
+                    else if (newMem.states.HasFlag(InputNetFlags.Use) && (FocusedCharacter?.IsPet ?? false))
                     {
                         newMem.interact = FocusedCharacter.ID;
                     }
@@ -253,6 +258,7 @@ namespace Barotrauma
                     if (readStatus)
                     {
                         ReadStatus(msg);
+                        (AIController as EnemyAIController)?.PetBehavior?.ClientRead(msg);
                     }
 
                     msg.ReadPadBits();
@@ -410,8 +416,7 @@ namespace Barotrauma
             Character character = null;
             if (noInfo)
             {
-                character = Create(speciesName, position, seed, null, false);
-                character.ID = id;
+                character = Create(speciesName, position, seed, characterInfo: null, id: id, isRemotePlayer: false);
                 bool containsStatusData = inc.ReadBoolean();
                 if (containsStatusData)
                 {
@@ -428,8 +433,7 @@ namespace Barotrauma
 
                 CharacterInfo info = CharacterInfo.ClientRead(infoSpeciesName, inc);
 
-                character = Create(speciesName, position, seed, info, ownerId > 0 && GameMain.Client.ID != ownerId, hasAi);
-                character.ID = id;
+                character = Create(speciesName, position, seed, characterInfo: info, id: id, isRemotePlayer: ownerId > 0 && GameMain.Client.ID != ownerId, hasAi: hasAi);
                 character.TeamID = (TeamType)teamID;
                 character.CampaignInteractionType = (CampaignMode.InteractionType)inc.ReadByte();
                 if (character.CampaignInteractionType != CampaignMode.InteractionType.None)
@@ -444,14 +448,25 @@ namespace Barotrauma
                     Entity targetEntity = FindEntityByID(inc.ReadUInt16());
                     Character orderGiver = inc.ReadBoolean() ? FindEntityByID(inc.ReadUInt16()) as Character : null;
                     int orderOptionIndex = inc.ReadByte();
+                    OrderTarget targetPosition = null;
+                    if (inc.ReadBoolean())
+                    {
+                        var x = inc.ReadSingle();
+                        var y = inc.ReadSingle();
+                        var hull = FindEntityByID(inc.ReadUInt16()) as Hull;
+                        targetPosition = new OrderTarget(new Vector2(x, y), hull, true);
+                    }
 
                     if (orderPrefabIndex >= 0 && orderPrefabIndex < Order.PrefabList.Count)
                     {
                         var orderPrefab = Order.PrefabList[orderPrefabIndex];
-                        if (!orderPrefab.MustSetTarget || (targetEntity != null && (targetEntity as Item).Components.Any(c => c?.GetType() == orderPrefab.ItemComponentType)))
+                        var component = orderPrefab.GetTargetItemComponent(targetEntity as Item);
+                        if (!orderPrefab.MustSetTarget || (targetEntity != null && component != null) || targetPosition != null)
                         {
-                            character.SetOrder(
-                                new Order(orderPrefab, targetEntity, (targetEntity as Item)?.Components.FirstOrDefault(c => c?.GetType() == orderPrefab.ItemComponentType), orderGiver: orderGiver),
+                            var order = targetPosition == null ?
+                                new Order(orderPrefab, targetEntity, component, orderGiver: orderGiver) :
+                                new Order(orderPrefab, targetPosition, orderGiver: orderGiver);
+                            character.SetOrder(order,
                                 orderOptionIndex >= 0 && orderOptionIndex < orderPrefab.Options.Length ? orderPrefab.Options[orderOptionIndex] : null,
                                 orderGiver, speak: false);
                         }

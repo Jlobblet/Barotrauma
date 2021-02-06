@@ -127,8 +127,7 @@ namespace Barotrauma.Networking
             if (IPAddress.IsLoopback(IP)) { return false; }
             var bannedPlayer = bannedPlayers.Find(bp =>
                 bp.CompareTo(IP) ||
-                (steamID > 0 && bp.SteamID == steamID) ||
-                (SteamManager.SteamIDStringToUInt64(bp.EndPoint) == steamID));
+                (steamID > 0 && (bp.SteamID == steamID || SteamManager.SteamIDStringToUInt64(bp.EndPoint) == steamID)));
             reason = bannedPlayer?.Reason;
             return bannedPlayer != null;
         }
@@ -332,7 +331,7 @@ namespace Barotrauma.Networking
 
             catch (Exception e)
             {
-                string errorMsg = "Error while writing banlist. {" + e + "}\n" + e.StackTrace;
+                string errorMsg = "Error while writing banlist. {" + e + "}\n" + e.StackTrace.CleanupStackTrace();
                 GameAnalyticsManager.AddErrorEventOnce("Banlist.ServerAdminWrite", GameAnalyticsSDK.Net.EGAErrorSeverity.Error, errorMsg);
                 throw;
             }

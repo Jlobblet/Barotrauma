@@ -38,6 +38,9 @@ namespace Barotrauma
         private GUIImage playstyleBanner;
         private GUITextBlock playstyleDescription;
 
+        private GUIComponent remoteContentContainer;
+        private XDocument remoteContentDoc;
+
         private Tab selectedTab;
 
         private Sprite backgroundSprite;
@@ -62,6 +65,14 @@ namespace Barotrauma
                 }
                 CreateHostServerFields();
                 CreateCampaignSetupUI();
+                if (remoteContentDoc?.Root != null)
+                {
+                    remoteContentContainer.ClearChildren();
+                    foreach (XElement subElement in remoteContentDoc.Root.Elements())
+                    {
+                        GUIComponent.FromXML(subElement, remoteContentContainer.RectTransform);
+                    }
+                }
             };
 
             new GUIImage(new RectTransform(new Vector2(0.4f, 0.25f), Frame.RectTransform, Anchor.BottomRight)
@@ -84,6 +95,11 @@ namespace Barotrauma
                 RelativeSpacing = 0.02f
             };
 
+            remoteContentContainer = new GUIFrame(new RectTransform(Vector2.One, parent: Frame.RectTransform), style: null)
+            {
+                CanBeFocused = false
+            };
+
 #if TEST_REMOTE_CONTENT
 
             var doc = XMLExtensions.TryLoadXml("Content/UI/MenuTextTest.xml");
@@ -91,7 +107,7 @@ namespace Barotrauma
             {
                 foreach (XElement subElement in doc?.Root.Elements())
                 {
-                    GUIComponent.FromXML(subElement, Frame.RectTransform);
+                    GUIComponent.FromXML(subElement, remoteContentContainer.RectTransform);
                 }
             }   
 #else
@@ -424,6 +440,8 @@ namespace Barotrauma
         #region Selection
         public override void Select()
         {
+            GUI.PreventPauseMenuToggle = false;
+
             base.Select();
 
             if (GameMain.Client != null)
@@ -806,19 +824,6 @@ namespace Barotrauma
             return true;
         }
         
-        private bool JoinServerClicked(GUIButton button, object obj)
-        {
-            GameMain.ServerListScreen.Select();
-            return true;
-        }
-
-        private bool SteamWorkshopClicked(GUIButton button, object obj)
-        {
-            if (!Steam.SteamManager.IsInitialized) { return false; }
-            GameMain.SteamWorkshopScreen.Select();
-            return true;
-        }
-
         private bool ChangeMaxPlayers(GUIButton button, object obj)
         {
             int.TryParse(maxPlayersBox.Text, out int currMaxPlayers);
@@ -829,33 +834,10 @@ namespace Barotrauma
             return true;
         }
 
-        private bool HostServerClicked(GUIButton button, object obj)
+        private void StartServer()
         {
             string name = serverNameBox.Text;
-            if (string.IsNullOrEmpty(name))
-            {
-                serverNameBox.Flash();
-                return false;
-            }
 
-            /*if (!int.TryParse(portBox.Text, out int port) || port < 0 || port > 65535)
-            {
-                portBox.Text = NetConfig.DefaultPort.ToString();
-                portBox.Flash();
-
-                return false;
-            }
-
-            int queryPort = 0;
-#if USE_STEAM
-            if (!int.TryParse(queryPortBox.Text, out queryPort) || queryPort < 0 || queryPort > 65535)
-            {
-                portBox.Text = NetConfig.DefaultQueryPort.ToString();
-                portBox.Flash();
-                return false;
-            }
-#endif
-            */
             GameMain.NetLobbyScreen?.Release();
             GameMain.NetLobbyScreen = new NetLobbyScreen();
             try
@@ -913,14 +895,13 @@ namespace Barotrauma
                 ChildServerRelay.Start(processInfo);
                 Thread.Sleep(1000); //wait until the server is ready before connecting
 
-                GameMain.Client = new GameClient(name, System.Net.IPAddress.Loopback.ToString(), Steam.SteamManager.GetSteamID(), name, ownerKey, true);
+                GameMain.Client = new GameClient(string.IsNullOrEmpty(GameMain.Config.PlayerName) ? name : GameMain.Config.PlayerName, 
+                    System.Net.IPAddress.Loopback.ToString(), Steam.SteamManager.GetSteamID(), name, ownerKey, true);
             }
             catch (Exception e)
             {
                 DebugConsole.ThrowError("Failed to start server", e);
             }
-
-            return true;
         }
 
         private bool QuitClicked(GUIButton button, object obj)
@@ -996,7 +977,7 @@ namespace Barotrauma
             GUI.Draw(Cam, spriteBatch);
 
 #if !UNSTABLE
-            string versionString = "Barotrauma v" + GameMain.Version + " (" + AssemblyInfo.GetBuildString() + ", branch " + AssemblyInfo.GetGitBranch() + ", revision " + AssemblyInfo.GetGitRevision() + ")";
+            string versionString = "Barotrauma v" + GameMain.Version + " (" + AssemblyInfo.BuildString + ", branch " + AssemblyInfo.GitBranch + ", revision " + AssemblyInfo.GitRevision + ")";
             GUI.SmallFont.DrawString(spriteBatch, versionString, new Vector2(HUDLayoutSettings.Padding, GameMain.GraphicsHeight - GUI.SmallFont.MeasureString(versionString).Y - HUDLayoutSettings.Padding * 0.75f), Color.White * 0.7f);
 #endif
             if (selectedTab != Tab.Credits)
@@ -1062,7 +1043,7 @@ namespace Barotrauma
                 GameAnalyticsManager.AddErrorEventOnce(
                     "MainMenuScreen.StartGame:IOException" + selectedSub.Name,
                     GameAnalyticsSDK.Net.EGAErrorSeverity.Error,
-                    "Copying the file \"" + selectedSub.FilePath + "\" failed.\n" + e.Message + "\n" + Environment.StackTrace);
+                    "Copying the file \"" + selectedSub.FilePath + "\" failed.\n" + e.Message + "\n" + Environment.StackTrace.CleanupStackTrace());
                 return;
             }
 
@@ -1139,7 +1120,16 @@ namespace Barotrauma
                 {
                     port = settingsDoc.Root.GetAttributeInt("port", port);
                     queryPort = settingsDoc.Root.GetAttributeInt("queryport", queryPort);
-                    maxPlayers = settingsDoc.Root.GetAttributeInt("maxplayers", maxPlayers);
+
+                    int maxPlayersElement = settingsDoc.Root.GetAttributeInt("maxplayers", maxPlayers);
+                    if (maxPlayersElement > NetConfig.MaxPlayers)
+                    {
+                        DebugConsole.IsOpen = true;
+                        DebugConsole.NewMessage($"Setting the maximum amount of players to {maxPlayersElement} failed due to exceeding the limit of {NetConfig.MaxPlayers} players per server. Using the maximum of {NetConfig.MaxPlayers} instead.", Color.Red);
+                        maxPlayersElement = NetConfig.MaxPlayers;
+                    }
+
+                    maxPlayers = maxPlayersElement;
                     karmaEnabled = settingsDoc.Root.GetAttributeBool("karmaenabled", true);
                     selectedKarmaPreset = settingsDoc.Root.GetAttributeString("karmapreset", "default");
                     string playStyleStr = settingsDoc.Root.GetAttributeString("playstyle", "Casual");
@@ -1334,7 +1324,35 @@ namespace Barotrauma
 
             new GUIButton(new RectTransform(new Vector2(0.4f, 0.07f), content.RectTransform), TextManager.Get("StartServerButton"), style: "GUIButtonLarge")
             {
-                OnClicked = HostServerClicked
+                OnClicked = (btn, userdata) =>
+                {
+                    string name = serverNameBox.Text;
+                    if (string.IsNullOrEmpty(name))
+                    {
+                        serverNameBox.Flash();
+                        return false;
+                    }
+
+                    if (ForbiddenWordFilter.IsForbidden(name, out string forbiddenWord))
+                    {
+                        var msgBox = new GUIMessageBox("", 
+                            TextManager.GetWithVariables("forbiddenservernameverification", new string[] { "[forbiddenword]", "[servername]" }, new string[] { forbiddenWord, name }), 
+                            new string[] { TextManager.Get("yes"), TextManager.Get("no") });
+                        msgBox.Buttons[0].OnClicked += (_, __) =>
+                        {
+                            StartServer();
+                            msgBox.Close();
+                            return true;
+                        };
+                        msgBox.Buttons[1].OnClicked += msgBox.Close;
+                    }
+                    else
+                    {
+                        StartServer();
+                    }
+
+                    return true;
+                }
             };
         }
 
@@ -1400,10 +1418,10 @@ namespace Barotrauma
                     if (index > 0) { xml = xml.Substring(index, xml.Length - index); }
                     if (!string.IsNullOrWhiteSpace(xml))
                     {
-                        XElement element = XDocument.Parse(xml)?.Root;
-                        foreach (XElement subElement in element.Elements())
+                        remoteContentDoc = XDocument.Parse(xml);
+                        foreach (XElement subElement in remoteContentDoc?.Root.Elements())
                         {
-                            GUIComponent.FromXML(subElement, Frame.RectTransform);
+                            GUIComponent.FromXML(subElement, remoteContentContainer.RectTransform);
                         }
                     }
                 }

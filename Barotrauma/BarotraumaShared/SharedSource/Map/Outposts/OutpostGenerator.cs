@@ -216,11 +216,13 @@ namespace Barotrauma
             List<MapEntity> loadEntities(Submarine sub)
             {
                 Dictionary<PlacedModule, List<MapEntity>> entities = new Dictionary<PlacedModule, List<MapEntity>>();
+                int idOffset = sub.IdOffset;
                 for (int i = 0; i < selectedModules.Count; i++)
                 {
                     var selectedModule = selectedModules[i];
                     sub.Info.GameVersion = selectedModule.Info.GameVersion;
-                    var moduleEntities = MapEntity.LoadAll(sub, selectedModule.Info.SubmarineElement, selectedModule.Info.FilePath);
+                    var moduleEntities = MapEntity.LoadAll(sub, selectedModule.Info.SubmarineElement, selectedModule.Info.FilePath, idOffset);
+                    idOffset = moduleEntities.Max(e => e.ID);
                     MapEntity.InitializeLoadedLinks(moduleEntities);
 
                     foreach (MapEntity entity in moduleEntities)
@@ -958,7 +960,7 @@ namespace Barotrauma
                     return placedEntities;
                 }
 
-                var moduleEntities = MapEntity.LoadAll(sub, hallwayInfo.SubmarineElement, hallwayInfo.FilePath);
+                var moduleEntities = MapEntity.LoadAll(sub, hallwayInfo.SubmarineElement, hallwayInfo.FilePath, -1);
 
                 //remove items that don't fit in the hallway
                 moduleEntities.Where(e => e is Item item && item.GetComponent<Door>() == null && e.Rect.Width > hallwayLength).ForEach(e => e.Remove());
@@ -1407,33 +1409,23 @@ namespace Barotrauma
                     if (item != null) { item.SpawnedInOutpost = true; }
                 }
                 npc.GiveIdCardTags(gotoTarget as WayPoint);
-                var humanAI = npc.AIController as HumanAIController;
-                if (humanAI != null) 
+                if (npc.AIController is HumanAIController humanAI) 
                 {
                     var idleObjective = humanAI.ObjectiveManager.GetObjective<AIObjectiveIdle>();
-                    if (idleObjective != null)
+                    if (humanPrefab.CampaignInteractionType != CampaignMode.InteractionType.None)
                     {
-                        idleObjective.Behavior = humanPrefab.BehaviorType;
+                        idleObjective.Behavior = AIObjectiveIdle.BehaviorType.StayInHull;
+                        idleObjective.TargetHull = AIObjectiveGoTo.GetTargetHull(gotoTarget);
+                        (GameMain.GameSession.GameMode as CampaignMode)?.AssignNPCMenuInteraction(npc, humanPrefab.CampaignInteractionType);
+                    }
+                    else
+                    {
+                        idleObjective.Behavior = humanPrefab.Behavior;
                         foreach (string moduleType in humanPrefab.PreferredOutpostModuleTypes)
                         {
                             idleObjective.PreferredOutpostModuleTypes.Add(moduleType);
                         }
                     }
-                }
-                if (humanPrefab.CampaignInteractionType != CampaignMode.InteractionType.None)
-                {
-                    if (humanAI != null)
-                    {
-                        Hull goToHull = gotoTarget as Hull ?? (gotoTarget as WayPoint)?.CurrentHull ?? (gotoTarget as Item)?.CurrentHull;
-                        var goToObjective = new AIObjectiveGoTo(gotoTarget, npc, humanAI.ObjectiveManager, repeat: true, getDivingGearIfNeeded: false, closeEnough: 200);
-                        if (goToHull != null)
-                        {
-                            goToObjective.priorityGetter = () => npc.CurrentHull == goToHull ? 0.0f : AIObjectiveManager.OrderPriority;
-                        }
-                        humanAI.ObjectiveManager.SetOrder(goToObjective);
-                        humanAI.ObjectiveManager.GetObjective<AIObjectiveIdle>().Behavior = AIObjectiveIdle.BehaviorType.StayInHull;
-                    }
-                    (GameMain.GameSession.GameMode as CampaignMode)?.AssignNPCMenuInteraction(npc, humanPrefab.CampaignInteractionType);
                 }
             }
         }

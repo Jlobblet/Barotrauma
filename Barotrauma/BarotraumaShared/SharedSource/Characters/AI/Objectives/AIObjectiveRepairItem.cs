@@ -10,6 +10,8 @@ namespace Barotrauma
     {
         public override string DebugTag => "repair item";
 
+        public override bool AllowInAnySub => true;
+
         public Item Item { get; private set; }
 
         private AIObjectiveGoTo goToObjective;
@@ -34,6 +36,7 @@ namespace Barotrauma
             if (!IsAllowed)
             {
                 Priority = 0;
+                Abandon = true;
                 return Priority;
             }
             // TODO: priority list?
@@ -69,7 +72,7 @@ namespace Barotrauma
             IsCompleted = Item.IsFullCondition;
             if (IsCompleted && IsRepairing())
             {
-                character?.Speak(TextManager.GetWithVariable("DialogItemRepaired", "[itemname]", Item.Name, true), null, 0.0f, "itemrepaired", 10.0f);
+                character.Speak(TextManager.GetWithVariable("DialogItemRepaired", "[itemname]", Item.Name, true), null, 0.0f, "itemrepaired", 10.0f);
             }
             return IsCompleted;
         }
@@ -87,7 +90,12 @@ namespace Barotrauma
                     {
                         foreach (RelatedItem requiredItem in kvp.Value)
                         {
-                            subObjectives.Add(new AIObjectiveGetItem(character, requiredItem.Identifiers, objectiveManager, true));
+                            var getItemObjective = new AIObjectiveGetItem(character, requiredItem.Identifiers, objectiveManager, true);
+                            if (objectiveManager.IsCurrentOrder<AIObjectiveRepairItems>())
+                            {
+                                getItemObjective.Abandoned += () => character.Speak(TextManager.Get("dialogcannotfindrequireditemtorepair"), null, 0.0f, "dialogcannotfindrequireditemtorepair", 10.0f);
+                            }
+                            subObjectives.Add(getItemObjective);
                         }
                     }
                     return;
@@ -134,7 +142,7 @@ namespace Barotrauma
                     return;
                 }
             }
-            if (character.CanInteractWith(Item, out _, checkLinked: false))
+            if (!character.IsClimbing && character.CanInteractWith(Item, out _, checkLinked: false))
             {
                 HumanAIController.FaceTarget(Item);
                 if (repairTool != null)
@@ -235,7 +243,11 @@ namespace Barotrauma
 
         private void OperateRepairTool(float deltaTime)
         {
-            character.CursorPosition = Item.Position;
+            character.CursorPosition = Item.WorldPosition;
+            if (character.Submarine != null)
+            {
+                character.CursorPosition -= character.Submarine.Position;
+            }
             if (repairTool.Item.RequireAimToUse)
             {
                 character.SetInput(InputType.Aim, false, true);

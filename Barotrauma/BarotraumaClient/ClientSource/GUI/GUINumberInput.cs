@@ -17,7 +17,8 @@ namespace Barotrauma
         
         public GUITextBox TextBox { get; private set; }
 
-        private GUIButton plusButton, minusButton;
+        public GUIButton PlusButton { get; private set; }
+        public GUIButton MinusButton { get; private set; }
 
         private NumberType inputType;
         public NumberType InputType
@@ -80,10 +81,13 @@ namespace Barotrauma
         private float floatValue;
         public float FloatValue
         {
-            get { return floatValue; }
+            get
+            {
+                return floatValue;
+            }
             set
             {
-                if (MathUtils.NearlyEqual(value, floatValue)) return;
+                if (MathUtils.NearlyEqual(value, floatValue)) { return; }
                 floatValue = value;
                 ClampFloatValue();
                 float newValue = floatValue;
@@ -128,10 +132,13 @@ namespace Barotrauma
         private int intValue;
         public int IntValue
         {
-            get { return intValue; }
+            get 
+            {
+                return intValue; 
+            }
             set
             {
-                if (value == intValue) return;
+                if (value == intValue) { return; }
                 intValue = value;
                 UpdateText();
             }
@@ -142,14 +149,14 @@ namespace Barotrauma
             get => base.Enabled;
             set
             {
-                plusButton.Enabled = true;
-                minusButton.Enabled = true;
+                PlusButton.Enabled = true;
+                MinusButton.Enabled = true;
                 if (InputType == NumberType.Int) { ClampIntValue(); } else { ClampFloatValue(); }
                 TextBox.Enabled = value;
                 if (!value)
                 {
-                    plusButton.Enabled = false;
-                    minusButton.Enabled = false;
+                    PlusButton.Enabled = false;
+                    MinusButton.Enabled = false;
                 }
             }
         }
@@ -191,21 +198,44 @@ namespace Barotrauma
             };
             TextBox.CaretColor = TextBox.TextColor;
             TextBox.OnTextChanged += TextChanged;
+            TextBox.OnDeselected += (sender, key) =>
+            {
+                if (inputType == NumberType.Int)
+                {
+                    ClampIntValue();
+                }
+                else
+                {
+                    ClampFloatValue();
+                }
+            };
+            TextBox.OnEnterPressed += (textBox, text) =>
+            {
+                if (inputType == NumberType.Int)
+                {
+                    ClampIntValue();
+                }
+                else
+                {
+                    ClampFloatValue();
+                }
+                return true;
+            };
 
             var buttonArea = new GUIFrame(new RectTransform(new Vector2(_relativeButtonAreaWidth, 1.0f), LayoutGroup.RectTransform, Anchor.CenterRight), style: null);
-            plusButton = new GUIButton(new RectTransform(new Vector2(1.0f, 0.5f), buttonArea.RectTransform), style: null);
-            GUI.Style.Apply(plusButton, "PlusButton", this);
-            plusButton.OnButtonDown += () =>
+            PlusButton = new GUIButton(new RectTransform(new Vector2(1.0f, 0.5f), buttonArea.RectTransform), style: null);
+            GUI.Style.Apply(PlusButton, "PlusButton", this);
+            PlusButton.OnButtonDown += () =>
             {
                 pressedTimer = pressedDelay;
                 return true;
             };
-            plusButton.OnClicked += (button, data) =>
+            PlusButton.OnClicked += (button, data) =>
             {
                 IncreaseValue();
                 return true;
             };
-            plusButton.OnPressed += () =>
+            PlusButton.OnPressed += () =>
             {
                 if (!IsPressedTimerRunning)
                 {
@@ -214,19 +244,19 @@ namespace Barotrauma
                 return true;
             };
 
-            minusButton = new GUIButton(new RectTransform(new Vector2(1.0f, 0.5f), buttonArea.RectTransform, Anchor.BottomRight), style: null);
-            GUI.Style.Apply(minusButton, "MinusButton", this);
-            minusButton.OnButtonDown += () =>
+            MinusButton = new GUIButton(new RectTransform(new Vector2(1.0f, 0.5f), buttonArea.RectTransform, Anchor.BottomRight), style: null);
+            GUI.Style.Apply(MinusButton, "MinusButton", this);
+            MinusButton.OnButtonDown += () =>
             {
                 pressedTimer = pressedDelay;
                 return true;
             };
-            minusButton.OnClicked += (button, data) =>
+            MinusButton.OnClicked += (button, data) =>
             {
                 ReduceValue();
                 return true;
             };
-            minusButton.OnPressed += () =>
+            MinusButton.OnPressed += () =>
             {
                 if (!IsPressedTimerRunning)
                 {
@@ -279,17 +309,17 @@ namespace Barotrauma
 
         private void HidePlusMinusButtons()
         {
-            plusButton.Parent.Visible = false;
-            plusButton.Parent.IgnoreLayoutGroups = true;
+            PlusButton.Parent.Visible = false;
+            PlusButton.Parent.IgnoreLayoutGroups = true;
             TextBox.RectTransform.RelativeSize = Vector2.One;
             LayoutGroup.Recalculate();
         }
 
         private void ShowPlusMinusButtons()
         {
-            plusButton.Parent.Visible = true;
-            plusButton.Parent.IgnoreLayoutGroups = false;
-            TextBox.RectTransform.RelativeSize = new Vector2(1.0f - plusButton.Parent.RectTransform.RelativeSize.X, 1.0f);
+            PlusButton.Parent.Visible = true;
+            PlusButton.Parent.IgnoreLayoutGroups = false;
+            TextBox.RectTransform.RelativeSize = new Vector2(1.0f - PlusButton.Parent.RectTransform.RelativeSize.X, 1.0f);
             LayoutGroup.Recalculate();
         }
 
@@ -298,10 +328,12 @@ namespace Barotrauma
             if (inputType == NumberType.Int)
             {
                 IntValue -= valueStep > 0 ? (int)valueStep : 1;
+                ClampIntValue();
             }
             else if (maxValueFloat.HasValue && minValueFloat.HasValue)
             {
                 FloatValue -= valueStep > 0 ? valueStep : Round();
+                ClampFloatValue();
             }
         }
 
@@ -310,10 +342,12 @@ namespace Barotrauma
             if (inputType == NumberType.Int)
             {
                 IntValue += valueStep > 0 ? (int)valueStep : 1;
+                ClampIntValue();
             }
             else if (inputType == NumberType.Float)
             {
                 FloatValue += valueStep > 0 ? valueStep : Round();
+                ClampFloatValue();
             }
         }
 
@@ -324,7 +358,7 @@ namespace Barotrauma
         /// </summary>
         private float Round()
         {
-            if (!maxValueFloat.HasValue || !minValueFloat.HasValue) return 0;
+            if (!maxValueFloat.HasValue || !minValueFloat.HasValue) { return 0; }
             float onePercent = MathHelper.Lerp(minValueFloat.Value, maxValueFloat.Value, 0.01f);
             float diff = maxValueFloat.Value - minValueFloat.Value;
             int decimals = (int)MathHelper.Lerp(3, 0, MathUtils.InverseLerp(10, 1000, diff));
@@ -336,28 +370,24 @@ namespace Barotrauma
             switch (InputType)
             {
                 case NumberType.Int:
-                    int newIntValue = IntValue;
                     if (string.IsNullOrWhiteSpace(text) || text == "-")
                     {
                         intValue = 0;
                     }
-                    else if (int.TryParse(text, out newIntValue))
+                    else if (int.TryParse(text, out int newIntValue))
                     {
                         intValue = newIntValue;
                     }
-                    ClampIntValue();
                     break;
                 case NumberType.Float:
-                    float newFloatValue = FloatValue;
                     if (string.IsNullOrWhiteSpace(text) || text == "-")
                     {
                         floatValue = 0;
                     }
-                    else if (float.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out newFloatValue))
+                    else if (float.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out float newFloatValue))
                     {
                         floatValue = newFloatValue;
                     }
-                    ClampFloatValue();
                     break;
             }
             OnValueChanged?.Invoke(this);
@@ -369,12 +399,12 @@ namespace Barotrauma
             if (MinValueFloat != null)
             {
                 floatValue = Math.Max(floatValue, MinValueFloat.Value);
-                minusButton.Enabled = floatValue > MinValueFloat;
+                MinusButton.Enabled = floatValue > MinValueFloat;
             }
             if (MaxValueFloat != null)
             {
                 floatValue = Math.Min(floatValue, MaxValueFloat.Value);
-                plusButton.Enabled = floatValue < MaxValueFloat;
+                PlusButton.Enabled = floatValue < MaxValueFloat;
             }
         }
 
@@ -390,8 +420,8 @@ namespace Barotrauma
                 intValue = Math.Min(intValue, MaxValueInt.Value);
                 UpdateText();
             }
-            plusButton.Enabled = intValue < MaxValueInt;
-            minusButton.Enabled = intValue > MinValueInt;
+            PlusButton.Enabled = intValue < MaxValueInt;
+            MinusButton.Enabled = intValue > MinValueInt;
         }
 
         private void UpdateText()

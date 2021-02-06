@@ -53,7 +53,7 @@ namespace Barotrauma
 
         private GUIFrame healthWindow;
 
-        private GUIComponent deadIndicator;
+        private GUITextBlock deadIndicator;
 
         private GUIComponent lowSkillIndicator;
 
@@ -225,7 +225,16 @@ namespace Barotrauma
                 Character.Controlled.ResetInteract = true;
                 if (openHealthWindow != null)
                 {
-                    openHealthWindow.characterName.Text = value.Character.Name;
+                    if (value.Character.Info == null || value.Character == Character.Controlled || Character.Controlled.HasEquippedItem("healthscanner"))
+                    {
+                        openHealthWindow.characterName.Text = value.Character.Name;
+                    }
+                    else
+                    {
+                        openHealthWindow.characterName.Text = value.Character.Info.DisplayName;
+                        value.Character.Info.CheckDisguiseStatus(false);
+                    }
+
                     if (Character.Controlled.SelectedConstruction != null && Character.Controlled.SelectedConstruction.GetComponent<Ladder>() == null)
                     {
                         Character.Controlled.SelectedConstruction = null;
@@ -322,11 +331,19 @@ namespace Barotrauma
                 }
             );
             deadIndicator = new GUITextBlock(new RectTransform(new Vector2(0.9f, 0.1f), limbSelection.RectTransform, Anchor.Center),
-                text: TextManager.Get("Deceased"), font: GUI.LargeFont, textAlignment: Alignment.Center, wrap: true, style: "GUIToolTip")
+                text: TextManager.Get("Deceased"), font: GUI.LargeFont, textAlignment: Alignment.Center, style: "GUIToolTip")
             {
                 Visible = false,
                 CanBeFocused = false
             };
+            if (deadIndicator.Text.Contains(' '))
+            {
+                deadIndicator.Wrap = true;
+            }
+            else
+            {
+                deadIndicator.AutoScaleHorizontal = true;
+            }
 
             var rightSide = new GUIFrame(new RectTransform(new Vector2(0.4f, 1.0f), paddedHealthWindow.RectTransform), style: null);
 
@@ -397,15 +414,17 @@ namespace Barotrauma
                 CanBeFocused = true
             };
 
+            textLayout.RectTransform.RelativeOffset = new Vector2(0, 0.025f);
+
             var nameContainer = new GUILayoutGroup(new RectTransform(new Vector2(1.0f, 0.2f), textLayout.RectTransform) { MinSize = new Point(0, 20) }, isHorizontal: true)
             {
                 Stretch = true
             };
 
-            new GUICustomComponent(new RectTransform(new Vector2(0.2f, 1.0f), nameContainer.RectTransform),
+            new GUICustomComponent(new RectTransform(new Vector2(0.2f, 1.0f), nameContainer.RectTransform, Anchor.CenterLeft),
                 onDraw: (spriteBatch, component) =>
                 {
-                    character.Info.DrawPortrait(spriteBatch, new Vector2(component.Rect.X, component.Rect.Center.Y - component.Rect.Width / 2), Vector2.Zero, component.Rect.Width);
+                    character.Info.DrawPortrait(spriteBatch, new Vector2(component.Rect.X, component.Rect.Center.Y - component.Rect.Width / 2), Vector2.Zero, component.Rect.Width, false, openHealthWindow?.Character != Character.Controlled);
                 });
             characterName = new GUITextBlock(new RectTransform(new Vector2(0.6f, 1.0f), nameContainer.RectTransform), "", textAlignment: Alignment.CenterLeft, font: GUI.SubHeadingFont)
             {
@@ -414,7 +433,7 @@ namespace Barotrauma
             new GUICustomComponent(new RectTransform(new Vector2(0.2f, 1.0f), nameContainer.RectTransform),
                 onDraw: (spriteBatch, component) =>
                 {
-                    character.Info.DrawJobIcon(spriteBatch, component.Rect);
+                    character.Info.DrawJobIcon(spriteBatch, component.Rect, openHealthWindow?.Character != Character.Controlled);
                 });
 
 
@@ -545,7 +564,7 @@ namespace Barotrauma
 
         private void OnAttacked(Character attacker, AttackResult attackResult)
         {
-            if (Math.Abs(attackResult.Damage) < 0.01f && attackResult.Afflictions.Count == 0) { return; }
+            if (Math.Abs(attackResult.Damage) < 0.01f) { return; }
             DamageOverlayTimer = MathHelper.Clamp(attackResult.Damage / MaxVitality, DamageOverlayTimer, 1.0f);
             if (healthShadowDelay <= 0.0f) { healthShadowDelay = 1.0f; }
 
@@ -611,17 +630,41 @@ namespace Barotrauma
             }
         }
 
-        partial void UpdateOxygenProjSpecific(float prevOxygen)
+        private float timeUntilNextHeartbeatSound = 0.0f;
+        private bool nextHeartbeatSoundIsSystole = true;
+        private const string diastoleSoundTag = "heartbeatdiastole", systoleSoundTag = "heartbeatsystole";
+
+        partial void UpdateOxygenProjSpecific(float prevOxygen, float deltaTime)
         {
-            if (prevOxygen > 0.0f && OxygenAmount <= 0.0f && 
-                Character.Controlled == Character)
+            if (prevOxygen > 0.0f && OxygenAmount <= 0.0f && Character.Controlled == Character)
             {
                 SoundPlayer.PlaySound(Character.Info != null && Character.Info.Gender == Gender.Female ? "drownfemale" : "drownmale");
+            }
+
+            if (Character == Character.Controlled && !IsUnconscious && !Character.IsDead && OxygenAmount < LowOxygenThreshold)
+            {
+                timeUntilNextHeartbeatSound -= deltaTime;
+                if (timeUntilNextHeartbeatSound < 0.0f)
+                {
+                    if (nextHeartbeatSoundIsSystole)
+                    {
+                        SoundPlayer.PlaySound(systoleSoundTag, 1.0f - (OxygenAmount / LowOxygenThreshold));
+                        timeUntilNextHeartbeatSound = MathHelper.Lerp(0.18f, 0.3f, Math.Clamp(OxygenAmount / InsufficientOxygenThreshold, 0.0f, 1.0f));
+                    }
+                    else
+                    {
+                        SoundPlayer.PlaySound(diastoleSoundTag, 1.0f - (OxygenAmount / LowOxygenThreshold));
+                        timeUntilNextHeartbeatSound = MathHelper.Lerp(0.3f, 0.5f, Math.Clamp(OxygenAmount / InsufficientOxygenThreshold, 0.0f, 1.0f));
+                    }
+                    nextHeartbeatSoundIsSystole = !nextHeartbeatSoundIsSystole;
+                }
             }
         }
 
         partial void UpdateBleedingProjSpecific(AfflictionBleeding affliction, Limb targetLimb, float deltaTime)
         {
+            if (Character.InvisibleTimer > 0.0f) { return; }
+
             bloodParticleTimer -= deltaTime * (affliction.Strength / 10.0f);
             if (bloodParticleTimer <= 0.0f)
             {
@@ -664,7 +707,7 @@ namespace Barotrauma
             {
                 forceAfflictionContainerUpdate = true;
                 currentDisplayedAfflictions = GetAllAfflictions(mergeSameAfflictions: true)
-                    .FindAll(a => a.Strength >= a.Prefab.ShowIconThreshold && a.Prefab.Icon != null);
+                    .FindAll(a => a.ShouldShowIcon(Character) && a.Prefab.Icon != null);
                 currentDisplayedAfflictions.Sort((a1, a2) =>
                 {
                     int dmgPerSecond = Math.Sign(a2.DamagePerSecond - a1.DamagePerSecond);
@@ -919,6 +962,28 @@ namespace Barotrauma
 
             SuicideButton.Visible = Character == Character.Controlled && !Character.IsDead && Character.IsIncapacitated;
 
+            if (GameMain.GameSession?.Campaign is { } campaign)
+            {
+                RectTransform endRoundButton = campaign?.EndRoundButton?.RectTransform;
+                RectTransform readyCheckButton = campaign?.ReadyCheckButton?.RectTransform;
+                if (endRoundButton != null)
+                {
+                    if (SuicideButton.Visible)
+                    {
+                        Point offset = new Point(0, SuicideButton.Rect.Height);
+                        endRoundButton.ScreenSpaceOffset = offset;
+                    }
+                    else if (endRoundButton.ScreenSpaceOffset != Point.Zero)
+                    {
+                        endRoundButton.ScreenSpaceOffset = Point.Zero;
+                    }
+                    if (readyCheckButton != null)
+                    {
+                        readyCheckButton.ScreenSpaceOffset = endRoundButton.ScreenSpaceOffset;
+                    }
+                }
+            }
+
             cprButton.Visible =
                 Character == Character.Controlled?.SelectedCharacter
                 && (Character.IsUnconscious || Character.Stun > 0.0f)
@@ -1147,7 +1212,7 @@ namespace Barotrauma
                 afflictionIconContainer.Content.ClearChildren();
                 return;
             }
-            var currentAfflictions = GetMatchingAfflictions(selectedLimb, a => a.Strength >= a.Prefab.ShowIconThreshold);
+            var currentAfflictions = GetMatchingAfflictions(selectedLimb, a => a.ShouldShowIcon(Character));
             var displayedAfflictions = afflictionIconContainer.Content.Children.Select(c => c.UserData as Affliction);
             if (currentAfflictions.Any(a => !displayedAfflictions.Contains(a)) || 
                 displayedAfflictions.Any(a => !currentAfflictions.Contains(a)))
@@ -1675,9 +1740,9 @@ namespace Barotrauma
 
                 var tempAfflictions = GetMatchingAfflictions(limbHealth, a => true);
 
-                float negativeEffect = tempAfflictions.Where(a => !a.Prefab.IsBuff && a.Strength >= a.Prefab.ShowIconThreshold).Sum(a => a.Strength);
+                float negativeEffect = tempAfflictions.Where(a => !a.Prefab.IsBuff && a.ShouldShowIcon(Character)).Sum(a => a.Strength);
                 //float negativeMaxEffect = tempAfflictions.Where(a => !a.Prefab.IsBuff).Sum(a => a.Prefab.MaxStrength);
-                float positiveEffect = tempAfflictions.Where(a => a.Prefab.IsBuff && a.Strength >= a.Prefab.ShowIconThreshold).Sum(a => a.Strength * 0.2f);
+                float positiveEffect = tempAfflictions.Where(a => a.Prefab.IsBuff && a.ShouldShowIcon(Character)).Sum(a => a.Strength * 0.2f);
                 //float positiveMaxEffect = tempAfflictions.Where(a => a.Prefab.IsBuff).Sum(a => a.Prefab.MaxStrength);
 
                 float midPoint = (float)limbEffectiveArea.Center.Y / (float)limbHealth.IndicatorSprite.Texture.Height;
@@ -1786,11 +1851,11 @@ namespace Barotrauma
             i = 0;
             foreach (LimbHealth limbHealth in limbHealths)
             {
-                IEnumerable<Affliction> thisAfflictions = limbHealth.Afflictions.Where(a => a.Strength >= a.Prefab.ShowIconThreshold);
+                IEnumerable<Affliction> thisAfflictions = limbHealth.Afflictions.Where(a => a.ShouldShowIcon(Character));
                 thisAfflictions = thisAfflictions.Concat(afflictions.Where(a =>
                 {
                     Limb indicatorLimb = Character.AnimController.GetLimb(a.Prefab.IndicatorLimb);
-                    return (indicatorLimb != null && indicatorLimb.HealthIndex == i && a.Strength >= a.Prefab.ShowIconThreshold);
+                    return indicatorLimb != null && indicatorLimb.HealthIndex == i && a.ShouldShowIcon(Character);
                 }));
 
                 if (thisAfflictions.Count() <= 0) { i++; continue; }
@@ -1837,12 +1902,14 @@ namespace Barotrauma
 
         private void DrawLimbAfflictionIcon(SpriteBatch spriteBatch, Affliction affliction, float iconScale, ref Vector2 iconPos)
         {
-            if (affliction.Strength < affliction.Prefab.ShowIconThreshold) return;
-            Vector2 iconSize = (affliction.Prefab.Icon.size * iconScale);
+            if (!affliction.ShouldShowIcon(Character)) { return; }
+            Vector2 iconSize = affliction.Prefab.Icon.size * iconScale;
+
+            float showIconThreshold = Character.Controlled?.CharacterHealth == this ? affliction.Prefab.ShowIconThreshold : affliction.Prefab.ShowIconToOthersThreshold;
 
             //afflictions that have a strength of less than 10 are faded out slightly
             float alpha = MathHelper.Lerp(0.3f, 1.0f,
-                (affliction.Strength - affliction.Prefab.ShowIconThreshold) / Math.Min(affliction.Prefab.MaxStrength - affliction.Prefab.ShowIconThreshold, 10.0f));
+                (affliction.Strength - showIconThreshold) / Math.Min(affliction.Prefab.MaxStrength - showIconThreshold, 10.0f));
 
             affliction.Prefab.Icon.Draw(spriteBatch, iconPos - iconSize / 2.0f, GetAfflictionIconColor(affliction.Prefab, affliction) * alpha, 0, iconScale);
             iconPos += new Vector2(10.0f, 20.0f) * iconScale;

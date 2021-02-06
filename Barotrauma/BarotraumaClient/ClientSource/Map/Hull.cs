@@ -5,16 +5,36 @@ using Microsoft.Xna.Framework.Input;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Barotrauma.MapCreatures.Behavior;
 
 namespace Barotrauma
 {
     partial class Hull : MapEntity, ISerializableEntity, IServerSerializable, IClientSerializable
     {
+        private class RemoteDecal
+        {
+            public readonly UInt32 DecalId;
+            public readonly int SpriteIndex;
+            public Vector2 NormalizedPos;
+            public readonly float Scale;
+
+            public RemoteDecal(UInt32 decalId, int spriteIndex, Vector2 normalizedPos, float scale)
+            {
+                DecalId = decalId;
+                SpriteIndex = spriteIndex;
+                NormalizedPos = normalizedPos;
+                Scale = scale;
+            }
+        }
+
         private float serverUpdateDelay;
         private float remoteWaterVolume, remoteOxygenPercentage;
         private List<Vector3> remoteFireSources;
         private readonly List<BackgroundSection> remoteBackgroundSections = new List<BackgroundSection>();
+        private readonly List<RemoteDecal> remoteDecals = new List<RemoteDecal>();
 
+        private readonly HashSet<Decal> pendingDecalUpdates = new HashSet<Decal>();
+        
         private double lastAmbientLightEditTime;
 
         public override bool SelectableInEditor
@@ -29,7 +49,7 @@ namespace Barotrauma
         {
             get
             {
-                return decals.Count > 0;
+                return decals.Count > 0 || BallastFlora != null;
             }
         }
 
@@ -46,6 +66,8 @@ namespace Barotrauma
 
         public override bool IsVisible(Rectangle worldView)
         {
+            if (BallastFlora != null) { return true; }
+
             if (Screen.Selected != GameMain.SubEditorScreen && !GameMain.DebugDraw)
             {
                 if (decals.Count == 0 && paintAmount < minimumPaintAmountToDraw) { return false; }
@@ -94,20 +116,21 @@ namespace Barotrauma
             {
                 if (entity == this || !entity.IsHighlighted) { continue; }
                 if (!entity.IsMouseOn(position)) { continue; }
-                if (entity.linkedTo != null && entity.linkedTo.Contains(this))
+                if (entity.linkedTo == null || !entity.Linkable) { continue; }
+                if (entity.linkedTo.Contains(this) || linkedTo.Contains(entity) || rClick)
                 {
-                    if (entity == this || !entity.IsHighlighted) continue;
-                    if (!entity.IsMouseOn(position)) continue;
-                    if (entity.Linkable && entity.linkedTo != null && !entity.linkedTo.Contains(this))
+                    if (entity == this || !entity.IsHighlighted) { continue; }
+                    if (!entity.IsMouseOn(position)) { continue; }
+                    if (entity.linkedTo.Contains(this))
                     {
-                        entity.linkedTo.Add(this);
-                        linkedTo.Add(entity);
+                        entity.linkedTo.Remove(this);
+                        linkedTo.Remove(entity);
                     }
                 }
-                else if (entity.Linkable && entity.linkedTo != null)
+                else
                 {
-                    entity.linkedTo.Add(this);
-                    linkedTo.Add(entity);
+                    if (!entity.linkedTo.Contains(this)) { entity.linkedTo.Add(this); }
+                    if (!linkedTo.Contains(this)) { linkedTo.Add(entity); }                       
                 }
             }
         }
@@ -125,9 +148,13 @@ namespace Barotrauma
                 networkUpdateTimer += deltaTime;
                 if (networkUpdateTimer > 0.2f)
                 {
-                    if (!pendingSectionUpdates.Any())
+                    if (!pendingSectionUpdates.Any() && !pendingDecalUpdates.Any())
                     {
                         GameMain.NetworkMember?.CreateEntityEvent(this);
+                    }
+                    foreach (Decal decal in pendingDecalUpdates)
+                    {
+                        GameMain.NetworkMember?.CreateEntityEvent(this, new object[] { decal });
                     }
                     foreach (int pendingSectionUpdate in pendingSectionUpdates)
                     {
@@ -205,6 +232,7 @@ namespace Barotrauma
         {
             if (back && Screen.Selected != GameMain.SubEditorScreen)
             {
+                BallastFlora?.Draw(spriteBatch);
                 DrawDecals(spriteBatch);
                 return;
             }
@@ -220,7 +248,7 @@ namespace Barotrauma
                 alpha = Math.Min((float)(Timing.TotalTime - lastAmbientLightEditTime) / hideTimeAfterEdit - 1.0f, 1.0f);
             }
 
-           Rectangle drawRect =
+            Rectangle drawRect =
                 Submarine == null ? rect : new Rectangle((int)(Submarine.DrawPosition.X + rect.X), (int)(Submarine.DrawPosition.Y + rect.Y), rect.Width, rect.Height);
 
             if ((IsSelected || IsHighlighted) && editing)
@@ -255,6 +283,13 @@ namespace Barotrauma
                 GUI.DrawRectangle(spriteBatch, new Rectangle(drawRect.Center.X, -drawRect.Y + drawRect.Height / 2, 10, 100), Color.Black);
 
                 foreach (FireSource fs in FireSources)
+                {
+                    Rectangle fireSourceRect = new Rectangle((int)fs.WorldPosition.X, -(int)fs.WorldPosition.Y, (int)fs.Size.X, (int)fs.Size.Y);
+                    GUI.DrawRectangle(spriteBatch, fireSourceRect, GUI.Style.Red, false, 0, 5);
+                    GUI.DrawRectangle(spriteBatch, new Rectangle(fireSourceRect.X - (int)fs.DamageRange, fireSourceRect.Y, fireSourceRect.Width + (int)fs.DamageRange * 2, fireSourceRect.Height), GUI.Style.Orange, false, 0, 5);
+                    //GUI.DrawRectangle(spriteBatch, new Rectangle((int)fs.LastExtinguishPos.X, (int)-fs.LastExtinguishPos.Y, 5,5), Color.Yellow, true);
+                }
+                foreach (FireSource fs in FakeFireSources)
                 {
                     Rectangle fireSourceRect = new Rectangle((int)fs.WorldPosition.X, -(int)fs.WorldPosition.Y, (int)fs.Size.X, (int)fs.Size.Y);
                     GUI.DrawRectangle(spriteBatch, fireSourceRect, GUI.Style.Red, false, 0, 5);
@@ -301,6 +336,7 @@ namespace Barotrauma
 
         public void DrawSectionColors(SpriteBatch spriteBatch)
         {
+            if (BackgroundSections == null || BackgroundSections.Count == 0) { return; }
             Vector2 drawOffset = Submarine == null ? Vector2.Zero : Submarine.DrawPosition;
             Point sectionSize = BackgroundSections[0].Rect.Size;
             Vector2 drawPos = drawOffset + new Vector2(rect.Location.X + sectionSize.X / 2, rect.Location.Y - sectionSize.Y / 2);
@@ -530,9 +566,9 @@ namespace Barotrauma
 
         public void ClientWrite(IWriteMessage msg, object[] extraData = null)
         {
-            msg.Write(extraData != null);
             if (extraData == null)
             {
+                msg.WriteRangedInteger(0, 0, 2);
                 msg.WriteRangedSingle(MathHelper.Clamp(waterVolume / Volume, 0.0f, 1.5f), 0.0f, 1.5f, 8);
 
                 msg.Write(FireSources.Count > 0);
@@ -552,8 +588,16 @@ namespace Barotrauma
                     }
                 }
             }
+            else if (extraData[0] is Decal decal)
+            {
+                msg.WriteRangedInteger(1, 0, 2);
+                int decalIndex = decals.IndexOf(decal);
+                msg.Write((byte)(decalIndex < 0 ? 255 : decalIndex));
+                msg.WriteRangedSingle(decal.BaseAlpha, 0.0f, 1.0f, 8);
+            }
             else
             {
+                msg.WriteRangedInteger(2, 0, 2);
                 int sectorToUpdate = (int)extraData[0];
                 int start = sectorToUpdate * BackgroundSectionsPerNetworkEvent;
                 int end = Math.Min((sectorToUpdate + 1) * BackgroundSectionsPerNetworkEvent, BackgroundSections.Count - 1);
@@ -568,6 +612,26 @@ namespace Barotrauma
 
         public void ClientRead(ServerNetObject type, IReadMessage message, float sendingTime)
         {
+            bool isBallastFloraUpdate = message.ReadBoolean();
+            if (isBallastFloraUpdate)
+            {
+                BallastFloraBehavior.NetworkHeader header = (BallastFloraBehavior.NetworkHeader) message.ReadByte();
+                if (header == BallastFloraBehavior.NetworkHeader.Spawn)
+                {
+                    string identifier = message.ReadString();
+                    float x = message.ReadSingle();
+                    float y = message.ReadSingle();
+                    BallastFlora = new BallastFloraBehavior(this, BallastFloraPrefab.Find(identifier), new Vector2(x, y), firstGrowth: true)
+                    {
+                        PowerConsumptionTimer = message.ReadSingle()
+                    };
+                }
+                else if (BallastFlora != null)
+                {
+                    BallastFlora.ClientRead(message, header);
+                }
+                return;
+            }
             remoteWaterVolume = message.ReadRangedSingle(0.0f, 1.5f, 8) * Volume;
             remoteOxygenPercentage = message.ReadRangedSingle(0.0f, 100.0f, 8);
 
@@ -598,11 +662,6 @@ namespace Barotrauma
                     {
                         float colorStrength = message.ReadRangedSingle(0.0f, 1.0f, 8);
                         Color color = new Color(message.ReadUInt32());
-                        float prevColorStrength = BackgroundSections[i].ColorStrength;
-                        BackgroundSections[i].SetColorStrength(colorStrength);
-                        BackgroundSections[i].SetColor(color);
-                        paintAmount = Math.Max(0, paintAmount + (BackgroundSections[i].ColorStrength - prevColorStrength) / BackgroundSections.Count);
-
                         var remoteBackgroundSection = remoteBackgroundSections.Find(s => s.Index == i);
                         if (remoteBackgroundSection != null)
                         {
@@ -619,16 +678,16 @@ namespace Barotrauma
                 else
                 {
                     int decalCount = message.ReadRangedInteger(0, MaxDecalsPerHull);
-                    decals.Clear();
+                    if (decalCount == 0) { decals.Clear(); }
+                    remoteDecals.Clear();
                     for (int i = 0; i < decalCount; i++)
                     {
                         UInt32 decalId = message.ReadUInt32();
+                        int spriteIndex = message.ReadByte();
                         float normalizedXPos = message.ReadRangedSingle(0.0f, 1.0f, 8);
                         float normalizedYPos = message.ReadRangedSingle(0.0f, 1.0f, 8);
-                        float decalPosX = MathHelper.Lerp(rect.X, rect.Right, normalizedXPos);
-                        float decalPosY = MathHelper.Lerp(rect.Y - rect.Height, rect.Y, normalizedYPos);
                         float decalScale = message.ReadRangedSingle(0.0f, 2.0f, 12);
-                        AddDecal(decalId, new Vector2(decalPosX, decalPosY), decalScale, isNetworkEvent: true);
+                        remoteDecals.Add(new RemoteDecal(decalId, spriteIndex, new Vector2(normalizedXPos, normalizedYPos), decalScale));
                     }
                 }
             }
@@ -642,10 +701,29 @@ namespace Barotrauma
         {
             foreach (BackgroundSection remoteBackgroundSection in remoteBackgroundSections)
             {
+                float prevColorStrength = BackgroundSections[remoteBackgroundSection.Index].ColorStrength;
                 BackgroundSections[remoteBackgroundSection.Index].SetColor(remoteBackgroundSection.Color);
                 BackgroundSections[remoteBackgroundSection.Index].SetColorStrength(remoteBackgroundSection.ColorStrength);
+                paintAmount = Math.Max(0, paintAmount + (BackgroundSections[remoteBackgroundSection.Index].ColorStrength - prevColorStrength) / BackgroundSections.Count);
             }
             remoteBackgroundSections.Clear();
+
+            if (remoteDecals.Any())
+            {
+                decals.Clear();
+                foreach (RemoteDecal remoteDecal in remoteDecals)
+                {
+                    float decalPosX = MathHelper.Lerp(rect.X, rect.Right, remoteDecal.NormalizedPos.X);
+                    float decalPosY = MathHelper.Lerp(rect.Y - rect.Height, rect.Y, remoteDecal.NormalizedPos.Y);
+                    if (Submarine != null)
+                    {
+                        decalPosX += Submarine.Position.X;
+                        decalPosY += Submarine.Position.Y;
+                    }
+                    AddDecal(remoteDecal.DecalId, new Vector2(decalPosX, decalPosY), remoteDecal.Scale, isNetworkEvent: true, spriteIndex: remoteDecal.SpriteIndex);
+                }
+                remoteDecals.Clear();
+            }
 
             if (remoteFireSources == null) { return; }
 

@@ -240,7 +240,14 @@ namespace Barotrauma.Particles
             {
                 animState += deltaTime;
                 int frameCount = ((SpriteSheet)prefab.Sprites[spriteIndex]).FrameCount;
-                animFrame = (int)Math.Min(Math.Floor(animState / prefab.AnimDuration * frameCount), frameCount - 1);
+                if (prefab.LoopAnim)
+                {
+                    animFrame = (int)(Math.Floor(animState / prefab.AnimDuration * frameCount) % frameCount);
+                }
+                else
+                {
+                    animFrame = (int)Math.Min(Math.Floor(animState / prefab.AnimDuration * frameCount), frameCount - 1);
+                }
             }
             
             lifeTime -= deltaTime;
@@ -483,7 +490,7 @@ namespace Barotrauma.Particles
 
             if (prefab.GrowTime > 0.0f && totalLifeTime - lifeTime < prefab.GrowTime)
             {
-                drawSize *= ((totalLifeTime - lifeTime) / prefab.GrowTime);
+                drawSize *= MathUtils.SmoothStep((totalLifeTime - lifeTime) / prefab.GrowTime);
             }
 
             Color currColor = new Color(color.ToVector4() * ColorMultiplier);

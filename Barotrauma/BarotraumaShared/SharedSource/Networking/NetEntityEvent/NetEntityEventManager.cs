@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Barotrauma.Networking
 {
@@ -32,26 +33,11 @@ namespace Barotrauma.Networking
                     DebugConsole.ThrowError("Failed to write an event for the entity \"" + e.Entity + "\"", exception);
                     GameAnalyticsManager.AddErrorEventOnce("NetEntityEventManager.Write:WriteFailed" + e.Entity.ToString(),
                         GameAnalyticsSDK.Net.EGAErrorSeverity.Error,
-                        "Failed to write an event for the entity \"" + e.Entity + "\"\n" + exception.StackTrace);
+                        "Failed to write an event for the entity \"" + e.Entity + "\"\n" + exception.StackTrace.CleanupStackTrace());
 
                     //write an empty event to avoid messing up IDs
                     //(otherwise the clients might read the next event in the message and think its ID 
                     //is consecutive to the previous one, even though we skipped over this broken event)
-                    tempBuffer.Write(Entity.NullEntityID);
-                    tempBuffer.WritePadBits();
-                    eventCount++;
-                    continue;
-                }
-                
-                //the length of the data is written as a byte, so the data needs to be less than 255 bytes long
-                if (tempEventBuffer.LengthBytes > 255)
-                {
-                    DebugConsole.ThrowError("Too much data in network event for entity \"" + e.Entity.ToString() + "\" (" + tempEventBuffer.LengthBytes + " bytes, event ID " + e.ID + ")");
-                    GameAnalyticsManager.AddErrorEventOnce("NetEntityEventManager.Write:TooLong" + e.Entity.ToString(),
-                        GameAnalyticsSDK.Net.EGAErrorSeverity.Error,
-                        "Too much data in network event for entity \"" + e.Entity.ToString() + "\" (" + tempEventBuffer.LengthBytes + " bytes, event ID " + e.ID + ")");
-
-                    //write an empty event to prevent breaking the event syncing
                     tempBuffer.Write(Entity.NullEntityID);
                     tempBuffer.WritePadBits();
                     eventCount++;
@@ -65,7 +51,7 @@ namespace Barotrauma.Networking
                 }
 
                 tempBuffer.Write(e.EntityID);
-                tempBuffer.Write((byte)tempEventBuffer.LengthBytes);
+                tempBuffer.WriteVariableUInt32((uint)tempEventBuffer.LengthBytes);
                 tempBuffer.Write(tempEventBuffer.Buffer, 0, tempEventBuffer.LengthBytes);
                 tempBuffer.WritePadBits();
                 sentEvents.Add(e);                

@@ -138,18 +138,19 @@ namespace Barotrauma
 
         public static Color GradientLerp(float t, params Color[] gradient)
         {
+            if (!MathUtils.IsValid(t)) { return Color.Purple; }
             System.Diagnostics.Debug.Assert(gradient.Length > 0, "Empty color array passed to the GradientLerp method");
             if (gradient.Length == 0)
             {
 #if DEBUG
-                DebugConsole.ThrowError("Empty color array passed to the GradientLerp method.\n" + Environment.StackTrace);
+                DebugConsole.ThrowError("Empty color array passed to the GradientLerp method.\n" + Environment.StackTrace.CleanupStackTrace());
 #endif
                 GameAnalyticsManager.AddErrorEventOnce("ToolBox.GradientLerp:EmptyColorArray", GameAnalyticsSDK.Net.EGAErrorSeverity.Error,
-                    "Empty color array passed to the GradientLerp method.\n" + Environment.StackTrace);
+                    "Empty color array passed to the GradientLerp method.\n" + Environment.StackTrace.CleanupStackTrace());
                 return Color.Black;
             }
 
-            if (t <= 0.0f) { return gradient[0]; }
+            if (t <= 0.0f || !MathUtils.IsValid(t)) { return gradient[0]; }
             if (t >= 1.0f) { return gradient[gradient.Length - 1]; }
 
             float scaledT = t * (gradient.Length - 1);

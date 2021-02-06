@@ -56,6 +56,8 @@ namespace Barotrauma
         public Dictionary<int, List<DecorativeSprite>> DecorativeSpriteGroups = new Dictionary<int, List<DecorativeSprite>>();
         public Sprite InventoryIcon;
         public Sprite MinimapIcon;
+        public Sprite InfectedSprite;
+        public Sprite DamagedInfectedSprite;
 
         //only used to display correct color in the sub editor, item instances have their own property that can be edited on a per-item basis
         [Serialize("1.0,1.0,1.0,1.0", false)]
@@ -97,9 +99,11 @@ namespace Barotrauma
                     {
                         if (potentialContainer?.OwnInventory?.TryPutItem(item, Character.Controlled) ?? false)
                         {
-                            GUI.PlayUISound(GUISoundType.PickItem);
+                            SoundPlayer.PlayUISound(GUISoundType.PickItem);
                         }
                     }
+
+                    SubEditorScreen.StoreCommand(new AddOrDeleteCommand(new List<MapEntity> {item}, false));
 
                     placePosition = Vector2.Zero;
                     return;

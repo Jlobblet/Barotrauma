@@ -55,13 +55,8 @@ namespace Barotrauma.Items.Components
         {
             if (character == null || !character.IsKeyDown(InputType.Aim)) return;
 
-#if DEBUG
             if (PlayerInput.KeyHit(InputType.PreviousFireMode))
-#else
-            if (PlayerInput.MouseWheelDownClicked())
-#endif
             {
-
                 if (spraySetting > 0)
                 {
                     spraySetting--;
@@ -74,11 +69,7 @@ namespace Barotrauma.Items.Components
                 targetSections.Clear();
             }
 
-#if DEBUG
             if (PlayerInput.KeyHit(InputType.NextFireMode))
-#else
-            if (PlayerInput.MouseWheelUpClicked())
-#endif
             {
                 if (spraySetting < 2)
                 {
@@ -263,7 +254,7 @@ namespace Barotrauma.Items.Components
             {
                 for (int i = 0; i < targetSections.Count; i++)
                 {
-                    targetHull.SetSectionColorOrStrength(targetSections[i], color, sizeAdjustedSprayStrength * deltaTime, true, false);
+                    targetHull.IncreaseSectionColorOrStrength(targetSections[i], color, sizeAdjustedSprayStrength * deltaTime, true, false);
                 }
             }
             else

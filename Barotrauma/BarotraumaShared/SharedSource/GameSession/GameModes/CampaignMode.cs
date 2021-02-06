@@ -30,6 +30,8 @@ namespace Barotrauma
 
         public CampaignMetadata CampaignMetadata;
 
+        protected XElement petsElement;
+
         public enum TransitionType
         {
             None,
@@ -144,7 +146,7 @@ namespace Barotrauma
                     {
                         for (int i = 0; i < wall.SectionCount; i++)
                         {
-                            wall.AddDamage(i, -wall.MaxHealth);
+                            wall.SetDamage(i, 0, createNetworkEvent: false);
                         }
                     }
                 }
@@ -179,6 +181,11 @@ namespace Barotrauma
             }
         }
 
+        /// <summary>
+        /// Automatically cleared after triggering -> no need to unregister
+        /// </summary>
+        public event Action BeforeLevelLoading;
+
         public void LoadNewLevel()
         {
             if (GameMain.NetworkMember != null && GameMain.NetworkMember.IsClient) 
@@ -188,9 +195,12 @@ namespace Barotrauma
 
             if (CoroutineManager.IsCoroutineRunning("LevelTransition"))
             {
-                DebugConsole.ThrowError("Level transition already running.\n" + Environment.StackTrace);
+                DebugConsole.ThrowError("Level transition already running.\n" + Environment.StackTrace.CleanupStackTrace());
                 return;
             }
+
+            BeforeLevelLoading?.Invoke();
+            BeforeLevelLoading = null;
 
             if (Level.Loaded == null || Submarine.MainSub == null)
             {
@@ -208,7 +218,7 @@ namespace Barotrauma
                     "leaving sub: " + (leavingSub?.Info?.Name ?? "null") + ", " +
                     "at start: " + (leavingSub?.AtStartPosition.ToString() ?? "null") + ", " +
                     "at end: " + (leavingSub?.AtEndPosition.ToString() ?? "null") + ")\n" +
-                    Environment.StackTrace);
+                    Environment.StackTrace.CleanupStackTrace());
                 return;
             }
             if (nextLevel == null)
@@ -220,7 +230,7 @@ namespace Barotrauma
                     "leaving sub: " + (leavingSub?.Info?.Name ?? "null") + ", " +
                     "at start: " + (leavingSub?.AtStartPosition.ToString() ?? "null") + ", " +
                     "at end: " + (leavingSub?.AtEndPosition.ToString() ?? "null") + ")\n" +
-                    Environment.StackTrace);
+                    Environment.StackTrace.CleanupStackTrace());
                 return;
             }
 #if CLIENT
@@ -502,6 +512,12 @@ namespace Barotrauma
             Map.SetLocation(Map.Locations.IndexOf(Map.StartLocation));
             Map.SelectLocation(-1);
             EndCampaignProjSpecific();
+
+            if (CampaignMetadata != null)
+            {
+                int loops = CampaignMetadata.GetInt("campaign.endings", 0);
+                CampaignMetadata.SetValue("campaign.endings",  loops + 1);
+            }
         }
 
         protected virtual void EndCampaignProjSpecific() { }

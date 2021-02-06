@@ -13,6 +13,8 @@ namespace Barotrauma
         public override bool ConcurrentObjectives => true;
         public override bool KeepDivingGearOn => true;
 
+        public override bool AllowInAnySub => true;
+
         private readonly Hull targetHull;
 
         private AIObjectiveGetItem getExtinguisherObjective;
@@ -30,12 +32,15 @@ namespace Barotrauma
             if (!IsAllowed)
             {
                 Priority = 0;
+                Abandon = true;
                 return Priority;
             }
-            if (!objectiveManager.IsCurrentOrder<AIObjectiveExtinguishFires>() 
-                && Character.CharacterList.Any(c => c.CurrentHull == targetHull && !HumanAIController.IsFriendly(c) && HumanAIController.IsActive(c)))
+            bool isOrder = objectiveManager.IsCurrentOrder<AIObjectiveExtinguishFires>();
+            if (!isOrder && Character.CharacterList.Any(c => c.CurrentHull == targetHull && !HumanAIController.IsFriendly(c) && HumanAIController.IsActive(c)))
             {
+                // Don't go into rooms with any enemies, unless it's an order
                 Priority = 0;
+                Abandon = true;
             }
             else
             {
@@ -43,14 +48,22 @@ namespace Barotrauma
                 yDist = yDist > 100 ? yDist * 3 : 0;
                 float dist = Math.Abs(character.WorldPosition.X - targetHull.WorldPosition.X) + yDist;
                 float distanceFactor = MathHelper.Lerp(1, 0.1f, MathUtils.InverseLerp(0, 5000, dist));
-                if (targetHull == character.CurrentHull)
+                if (targetHull == character.CurrentHull || HumanAIController.VisibleHulls.Contains(targetHull))
                 {
                     distanceFactor = 1;
                 }
                 float severity = AIObjectiveExtinguishFires.GetFireSeverity(targetHull);
-                float severityFactor = MathHelper.Lerp(0, 1, severity / 100);
-                float devotion = CumulatedDevotion / 100;
-                Priority = MathHelper.Lerp(0, 100, MathHelper.Clamp(devotion + (severityFactor * distanceFactor * PriorityModifier), 0, 1));
+                if (severity > 0.5f && !isOrder)
+                {
+                    // Ignore severe fires unless ordered. (Let the fire drain all the oxygen instead).
+                    Priority = 0;
+                    Abandon = true;
+                }
+                else
+                {
+                    float devotion = CumulatedDevotion / 100;
+                    Priority = MathHelper.Lerp(0, 100, MathHelper.Clamp(devotion + (severity * distanceFactor * PriorityModifier), 0, 1));
+                }
             }
             return Priority;
         }
@@ -65,12 +78,21 @@ namespace Barotrauma
             {
                 TryAddSubObjective(ref getExtinguisherObjective, () =>
                 {
-                    character.Speak(TextManager.Get("DialogFindExtinguisher"), null, 2.0f, "findextinguisher", 30.0f);
-                    return new AIObjectiveGetItem(character, "fireextinguisher", objectiveManager, equip: true)
+                    if (!character.HasEquippedItem("fireextinguisher", allowBroken: false))
                     {
+                        character.Speak(TextManager.Get("DialogFindExtinguisher"), null, 2.0f, "findextinguisher", 30.0f);
+                    }
+                    var getItemObjective = new AIObjectiveGetItem(character, "fireextinguisher", objectiveManager, equip: true)
+                    {
+                        AllowStealing = true,
                         // If the item is inside an unsafe hull, decrease the priority
                         GetItemPriority = i => HumanAIController.UnsafeHulls.Contains(i.CurrentHull) ? 0.1f : 1
                     };
+                    if (objectiveManager.IsCurrentOrder<AIObjectiveExtinguishFires>())
+                    {
+                        getItemObjective.Abandoned += () => character.Speak(TextManager.Get("dialogcannotfindfireextinguisher"), null, 0.0f, "dialogcannotfindfireextinguisher", 10.0f);
+                    };
+                    return getItemObjective;
                 });
             }
             else
@@ -86,9 +108,12 @@ namespace Barotrauma
                 }
                 foreach (FireSource fs in targetHull.FireSources)
                 {
-                    bool inRange = fs.IsInDamageRange(character, MathHelper.Clamp(fs.DamageRange * 1.5f, extinguisher.Range * 0.5f, extinguisher.Range));
-                    bool move = !inRange || !HumanAIController.VisibleHulls.Contains(fs.Hull);
-                    if (inRange || useExtinquisherTimer > 0.0f)
+                    float xDist = Math.Abs(character.WorldPosition.X - fs.WorldPosition.X) - fs.DamageRange;
+                    float yDist = Math.Abs(character.WorldPosition.Y - fs.WorldPosition.Y);
+                    bool inRange = xDist + yDist < extinguisher.Range;
+                    bool canSee = HumanAIController.VisibleHulls.Contains(fs.Hull) || character.CanSeeTarget(fs);
+                    bool move = !inRange || !canSee;
+                    if ((inRange && canSee) || useExtinquisherTimer > 0)
                     {
                         useExtinquisherTimer += deltaTime;
                         if (useExtinquisherTimer > 2.0f)
@@ -102,19 +127,7 @@ namespace Barotrauma
                         character.CursorPosition += VectorExtensions.Forward(extinguisherItem.body.TransformedRotation + (float)Math.Sin(sinTime) / 2, dist / 2);
                         if (extinguisherItem.RequireAimToUse)
                         {
-                            bool isOperatingButtons = false;
-                            if (SteeringManager == PathSteering)
-                            {
-                                var door = PathSteering.CurrentPath?.CurrentNode?.ConnectedDoor;
-                                if (door != null && !door.IsOpen && !door.IsBroken)
-                                {
-                                    isOperatingButtons = door.HasIntegratedButtons || door.Item.GetConnectedComponents<Controller>(true).Any();
-                                }
-                            }
-                            if (!isOperatingButtons)
-                            {
-                                character.SetInput(InputType.Aim, false, true);
-                            }
+                            character.SetInput(InputType.Aim, false, true);
                             sinTime += deltaTime * 10;
                         }
                         character.SetInput(extinguisherItem.IsShootable ? InputType.Shoot : InputType.Use, false, true);
@@ -123,21 +136,20 @@ namespace Barotrauma
                         {
                             character.Speak(TextManager.GetWithVariable("DialogPutOutFire", "[roomname]", targetHull.DisplayName, true), null, 0, "putoutfire", 10.0f);
                         }
-                        if (!character.CanSeeTarget(fs))
-                        {
-                            move = true;
-                        }
                     }
                     if (move)
                     {
                         //go to the first firesource
-                        TryAddSubObjective(ref gotoObjective, () => new AIObjectiveGoTo(fs, character, objectiveManager, closeEnough: extinguisher.Range / 2)
+                        if (TryAddSubObjective(ref gotoObjective, () => new AIObjectiveGoTo(fs, character, objectiveManager, closeEnough: Math.Max(fs.DamageRange, extinguisher.Range * 0.7f))
+                            {
+                                DialogueIdentifier = "dialogcannotreachfire",
+                                TargetName = fs.Hull.DisplayName
+                            }, 
+                                onAbandon: () =>  Abandon = true, 
+                                onCompleted: () => RemoveSubObjective(ref gotoObjective)))
                         {
-                            DialogueIdentifier = "dialogcannotreachfire",
-                            TargetName = fs.Hull.DisplayName
-                        }, 
-                            onAbandon: () =>  Abandon = true, 
-                            onCompleted: () => RemoveSubObjective(ref gotoObjective));
+                            gotoObjective.requiredCondition = () => HumanAIController.VisibleHulls.Contains(fs.Hull);
+                        }
                     }
                     else
                     {

@@ -1,5 +1,5 @@
-﻿using System;
-using System.Linq;
+﻿using Microsoft.Xna.Framework;
+using System;
 
 namespace Barotrauma.Networking
 {
@@ -49,45 +49,73 @@ namespace Barotrauma.Networking
                     Character targetCharacter = Entity.FindEntityByID(targetCharacterID) as Character;
                     Entity targetEntity = Entity.FindEntityByID(msg.ReadUInt16());
                     int optionIndex = msg.ReadByte();
+                    OrderTarget orderTargetPosition = null;
+                    Order.OrderTargetType orderTargetType = (Order.OrderTargetType)msg.ReadByte();
+                    int wallSectionIndex = 0;
+                    if (msg.ReadBoolean())
+                    {
+                        var x = msg.ReadSingle();
+                        var y = msg.ReadSingle();
+                        var hull = Entity.FindEntityByID(msg.ReadUInt16()) as Hull;
+                        orderTargetPosition = new OrderTarget(new Vector2(x, y), hull, creatingFromExistingData: true);
+                    }
+                    else if(orderTargetType == Order.OrderTargetType.WallSection)
+                    {
+                        wallSectionIndex = msg.ReadByte();
+                    }
 
-                    Order order = null;
+                    Order orderPrefab;
                     if (orderIndex < 0 || orderIndex >= Order.PrefabList.Count)
                     {
                         DebugConsole.ThrowError("Invalid order message - order index out of bounds.");
-                        if (NetIdUtils.IdMoreRecent(ID, LastID)) LastID = ID;
+                        if (NetIdUtils.IdMoreRecent(ID, LastID)) { LastID = ID; }
                         return;
                     }
                     else
                     {
-                        order = Order.PrefabList[orderIndex];
+                        orderPrefab = Order.PrefabList[orderIndex];
                     }
                     string orderOption = "";
-                    if (optionIndex >= 0 && optionIndex < order.Options.Length)
+                    if (optionIndex >= 0 && optionIndex < orderPrefab.Options.Length)
                     {
-                        orderOption = order.Options[optionIndex];
+                        orderOption = orderPrefab.Options[optionIndex];
                     }
-                    txt = order.GetChatMessage(targetCharacter?.Name, senderCharacter?.CurrentHull?.DisplayName, givingOrderToSelf: targetCharacter == senderCharacter, orderOption: orderOption);
+                    txt = orderPrefab.GetChatMessage(targetCharacter?.Name, senderCharacter?.CurrentHull?.DisplayName, givingOrderToSelf: targetCharacter == senderCharacter, orderOption: orderOption);
 
                     if (GameMain.Client.GameStarted && Screen.Selected == GameMain.GameScreen)
                     {
-                        if (order.TargetAllCharacters)
+                        Order order = null;
+                        switch (orderTargetType)
                         {
-                            GameMain.GameSession?.CrewManager?.AddOrder(
-                                new Order(order.Prefab, targetEntity, (targetEntity as Item)?.Components.FirstOrDefault(ic => ic.GetType() == order.ItemComponentType), orderGiver: senderCharacter),
-                                order.Prefab.FadeOutTime);
+                            case Order.OrderTargetType.Entity:
+                                order = new Order(orderPrefab, targetEntity, orderPrefab.GetTargetItemComponent(targetEntity as Item), orderGiver: senderCharacter);
+                                break;
+                            case Order.OrderTargetType.Position:
+                                order = new Order(orderPrefab, orderTargetPosition, orderGiver: senderCharacter);
+                                break;
+                            case Order.OrderTargetType.WallSection:
+                                order = new Order(orderPrefab, targetEntity as Structure, wallSectionIndex, orderGiver: senderCharacter);
+                                break;
                         }
-                        else if (targetCharacter != null)
+
+                        if (order != null)
                         {
-                            targetCharacter.SetOrder(
-                                new Order(order.Prefab, targetEntity, (targetEntity as Item)?.Components.FirstOrDefault(ic => ic.GetType() == order.ItemComponentType), orderGiver: senderCharacter),
-                                    orderOption, senderCharacter);
+                            if (order.TargetAllCharacters)
+                            {
+                                var fadeOutTime = !orderPrefab.IsIgnoreOrder ? (float?)orderPrefab.FadeOutTime : null;
+                                GameMain.GameSession?.CrewManager?.AddOrder(order, fadeOutTime);
+                            }
+                            else if (targetCharacter != null)
+                            {
+                                targetCharacter.SetOrder(order, orderOption, senderCharacter);
+                            }
                         }
                     }
 
                     if (NetIdUtils.IdMoreRecent(ID, LastID))
                     {
                         GameMain.Client.AddChatMessage(
-                            new OrderChatMessage(order, orderOption, txt, targetEntity, targetCharacter, senderCharacter));
+                            new OrderChatMessage(orderPrefab, orderOption, txt, orderTargetPosition ?? targetEntity as ISpatialEntity, targetCharacter, senderCharacter));
                         LastID = ID;
                     }
                     return;

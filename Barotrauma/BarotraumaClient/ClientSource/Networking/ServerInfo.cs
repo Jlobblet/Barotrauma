@@ -373,7 +373,17 @@ namespace Barotrauma.Networking
 
             info.GameMode = element.GetAttributeString("GameMode", "");
             info.GameVersion = element.GetAttributeString("GameVersion", "");
-            info.MaxPlayers = element.GetAttributeInt("MaxPlayers", 0);
+
+            int maxPlayersElement = element.GetAttributeInt("MaxPlayers", 0);
+
+            if (maxPlayersElement > NetConfig.MaxPlayers)
+            {
+                /*DebugConsole.IsOpen = true;
+                DebugConsole.NewMessage($"Setting the maximum amount of players to {maxPlayersElement} failed due to exceeding the limit of {NetConfig.MaxPlayers} players per server. Using the maximum of {NetConfig.MaxPlayers} instead.", Color.Red);*/
+                maxPlayersElement = NetConfig.MaxPlayers;
+            }
+
+            info.MaxPlayers = maxPlayersElement;
 
             if (Enum.TryParse(element.GetAttributeString("PlayStyle", ""), out PlayStyle playStyleTemp)) { info.PlayStyle = playStyleTemp; }
             if (bool.TryParse(element.GetAttributeString("UsingWhiteList", ""), out bool whitelistTemp)) { info.UsingWhiteList = whitelistTemp; }
@@ -529,6 +539,19 @@ namespace Barotrauma.Networking
             element.SetAttributeValue("HasPassword", HasPassword.ToString());
 
             return element;
+        }
+
+        public override bool Equals(object obj)
+        {
+            return obj is ServerInfo other ? Equals(other) : base.Equals(obj);
+        }
+
+        public bool Equals(ServerInfo other)
+        {
+            return
+                other.OwnerID == OwnerID &&
+                (other.LobbyID == LobbyID || other.LobbyID == 0 || LobbyID == 0) &&
+                ((OwnerID == 0) ? (other.IP == IP && other.Port == Port) : true);
         }
     }
 }

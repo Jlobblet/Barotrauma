@@ -585,7 +585,8 @@ namespace Barotrauma
             if (files.Any(f => f.Type == ContentType.Submarine ||
                                f.Type == ContentType.Outpost ||
                                f.Type == ContentType.OutpostModule ||
-                               f.Type == ContentType.Wreck)) { SubmarineInfo.RefreshSavedSubs(); }
+                               f.Type == ContentType.Wreck ||
+                               f.Type == ContentType.BeaconStation)) { SubmarineInfo.RefreshSavedSubs(); }
             if (files.Any(f => f.Type == ContentType.NPCSets)) { NPCSet.LoadSets(); }
             if (files.Any(f => f.Type == ContentType.OutpostConfig)) { OutpostGenerationParams.LoadPresets(); }
             if (files.Any(f => f.Type == ContentType.Factions)) { FactionPrefab.LoadFactions(); }
@@ -602,6 +603,7 @@ namespace Barotrauma
             if (files.Any(f => f.Type == ContentType.LevelObjectPrefabs)) { LevelObjectPrefab.LoadAll(); }
             if (files.Any(f => f.Type == ContentType.MapGenerationParameters)) { MapGenerationParams.Init(); }
             if (files.Any(f => f.Type == ContentType.LevelGenerationParameters)) { LevelGenerationParams.LoadPresets(); }
+            if (files.Any(f => f.Type == ContentType.CaveGenerationParameters)) { CaveGenerationParams.LoadPresets(); }
             if (files.Any(f => f.Type == ContentType.TraitorMissions)) { TraitorMissionPrefab.Init(); }
             if (files.Any(f => f.Type == ContentType.Orders)) { Order.Init(); }
             if (files.Any(f => f.Type == ContentType.EventManagerSettings)) { EventManagerSettings.Init(); }
@@ -635,6 +637,7 @@ namespace Barotrauma
             ContentType.LocationTypes,
             ContentType.MapGenerationParameters,
             ContentType.LevelGenerationParameters,
+            ContentType.CaveGenerationParameters,
             ContentType.Sounds,
             ContentType.Particles,
             ContentType.Decals,
@@ -645,6 +648,7 @@ namespace Barotrauma
             ContentType.Factions,
             ContentType.Wreck,
             ContentType.WreckAIConfig,
+            ContentType.BeaconStation,
             ContentType.BackgroundCreaturePrefabs,
             ContentType.ServerExecutable,
             ContentType.TraitorMissions,
@@ -730,6 +734,7 @@ namespace Barotrauma
         public static bool EnableSubmarineAutoSave { get; set; }
         public static int MaximumAutoSaves { get; set; }
         public static Color SubEditorBackgroundColor { get; set; }
+        public static int SubEditorMaxUndoBuffer { get; set; }
 
         public bool ShowTutorialSkipWarning
         {
@@ -833,7 +838,7 @@ namespace Barotrauma
             }
         }
 
-        private void LoadDefaultConfig(bool setLanguage = true)
+        private void LoadDefaultConfig(bool setLanguage = true, bool loadContentPackages = true)
         {
             XDocument doc = XMLExtensions.TryLoadXml(SavePath);
             if (doc == null)
@@ -865,7 +870,10 @@ namespace Barotrauma
 #if CLIENT
             LoadControls(doc);
 #endif
-            LoadContentPackages(doc);
+            if (loadContentPackages)
+            {
+                LoadContentPackages(doc);
+            }
 
 #if DEBUG
             WindowMode = WindowMode.Windowed;
@@ -898,6 +906,7 @@ namespace Barotrauma
                 new XAttribute("submarineautosave", EnableSubmarineAutoSave),
                 new XAttribute("maxautosaves", MaximumAutoSaves),
                 new XAttribute("subeditorbackground", XMLExtensions.ColorToString(SubEditorBackgroundColor)),
+                new XAttribute("subeditorundobuffer", SubEditorMaxUndoBuffer),
                 new XAttribute("enablesplashscreen", EnableSplashScreen),
                 new XAttribute("usesteammatchmaking", UseSteamMatchmaking),
                 new XAttribute("quickstartsub", QuickStartSubmarineName),
@@ -1033,7 +1042,7 @@ namespace Barotrauma
             {
                 DebugConsole.ThrowError("Saving game settings failed.", e);
                 GameAnalyticsManager.AddErrorEventOnce("GameSettings.Save:SaveFailed", GameAnalyticsSDK.Net.EGAErrorSeverity.Error,
-                    "Saving game settings failed.\n" + e.Message + "\n" + e.StackTrace);
+                    "Saving game settings failed.\n" + e.Message + "\n" + e.StackTrace.CleanupStackTrace());
             }
         }
 
@@ -1119,6 +1128,7 @@ namespace Barotrauma
                 new XAttribute("verboselogging", VerboseLogging),
                 new XAttribute("savedebugconsolelogs", SaveDebugConsoleLogs),
                 new XAttribute("submarineautosave", EnableSubmarineAutoSave),
+                new XAttribute("subeditorundobuffer", SubEditorMaxUndoBuffer),
                 new XAttribute("maxautosaves", MaximumAutoSaves),
                 new XAttribute("subeditorbackground", XMLExtensions.ColorToString(SubEditorBackgroundColor)),
                 new XAttribute("enablesplashscreen", EnableSplashScreen),
@@ -1232,17 +1242,6 @@ namespace Barotrauma
 
             doc.Root.Add(contentPackagesElement);
 
-#if UNSTABLE
-            //TODO: remove at some point
-            foreach (ContentPackage package in AllEnabledPackages)
-            {
-                XElement compatibilityElement = new XElement("contentpackage");
-                compatibilityElement.Add(new XAttribute("path", package.Path));
-
-                doc.Root.Add(compatibilityElement);
-            }
-#endif
-
 #if CLIENT
             var keyMappingElement = new XElement("keymapping");
             doc.Root.Add(keyMappingElement);
@@ -1337,7 +1336,7 @@ namespace Barotrauma
             {
                 DebugConsole.ThrowError("Saving game settings failed.", e);
                 GameAnalyticsManager.AddErrorEventOnce("GameSettings.Save:SaveFailed", GameAnalyticsSDK.Net.EGAErrorSeverity.Error,
-                    "Saving game settings failed.\n" + e.Message + "\n" + e.StackTrace);
+                    "Saving game settings failed.\n" + e.Message + "\n" + e.StackTrace.CleanupStackTrace());
             }
         }
 #endregion
@@ -1355,6 +1354,7 @@ namespace Barotrauma
             EnableSubmarineAutoSave = doc.Root.GetAttributeBool("submarineautosave", true);
             MaximumAutoSaves = doc.Root.GetAttributeInt("maxautosaves", 8);
             SubEditorBackgroundColor = doc.Root.GetAttributeColor("subeditorbackground", new Color(0.051f, 0.149f, 0.271f, 1.0f));
+            SubEditorMaxUndoBuffer = doc.Root.GetAttributeInt("subeditorundobuffer", 32);
             UseSteamMatchmaking = doc.Root.GetAttributeBool("usesteammatchmaking", UseSteamMatchmaking);
             RequireSteamAuthentication = doc.Root.GetAttributeBool("requiresteamauthentication", RequireSteamAuthentication);
             EnableSplashScreen = doc.Root.GetAttributeBool("enablesplashscreen", EnableSplashScreen);

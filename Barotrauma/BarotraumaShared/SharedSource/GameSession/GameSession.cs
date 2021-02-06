@@ -160,11 +160,17 @@ namespace Barotrauma
 
         private GameMode InstantiateGameMode(GameModePreset gameModePreset, string seed, MissionPrefab missionPrefab = null, MissionType missionType = MissionType.None)
         {
-            if (gameModePreset.GameModeType == typeof(MissionMode))
+            if (gameModePreset.GameModeType == typeof(CoOpMode))
             {
                 return missionPrefab != null ?
-                    new MissionMode(gameModePreset, missionPrefab) :
-                    new MissionMode(gameModePreset, missionType, seed ?? ToolBox.RandomSeed(8));
+                    new CoOpMode(gameModePreset, missionPrefab) :
+                    new CoOpMode(gameModePreset, missionType, seed ?? ToolBox.RandomSeed(8));
+            }
+            else if (gameModePreset.GameModeType == typeof(PvPMode))
+            {
+                return missionPrefab != null ?
+                    new PvPMode(gameModePreset, missionPrefab) :
+                    new PvPMode(gameModePreset, missionType, seed ?? ToolBox.RandomSeed(8));
             }
             else if (gameModePreset.GameModeType == typeof(MultiPlayerCampaign))
             {
@@ -282,6 +288,11 @@ namespace Barotrauma
                 DebugConsole.ThrowError("Couldn't start game session, submarine file corrupted.");
                 return;
             }
+            if (SubmarineInfo.SubmarineElement.Elements().Count() == 0)
+            {
+                DebugConsole.ThrowError("Couldn't start game session, saved submarine is empty. The submarine file may be corrupted.");
+                return;
+            }
 
             LevelData = levelData;
 
@@ -348,6 +359,8 @@ namespace Barotrauma
                     GUI.AddMessage(TextManager.AddPunctuation(':', TextManager.Get("Location"), StartLocation.Name), Color.CadetBlue, playSound: false);
                 }
             }
+
+            GUI.PreventPauseMenuToggle = false;
 #endif
         }
 
@@ -375,7 +388,7 @@ namespace Barotrauma
             }
 
             Entity.Spawner = new EntitySpawner();
-            
+
             if (GameMode.Mission != null) { Mission = GameMode.Mission; }
             if (GameMode != null) { GameMode.Start(); }
             if (GameMode.Mission != null)
@@ -404,6 +417,7 @@ namespace Barotrauma
                     //the server does this after loading the respawn shuttle
                     Level?.SpawnNPCs();
                     Level?.SpawnCorpses();
+                    Level?.PrepareBeaconStation();
                     AutoItemPlacer.PlaceIfNeeded();
                 }
                 if (GameMode is MultiPlayerCampaign mpCampaign)
@@ -542,6 +556,12 @@ namespace Barotrauma
                 Mission == null ? "None" : Mission.GetType().ToString());
 
 #if CLIENT
+            if (GUI.PauseMenuOpen)
+            {
+                GUI.TogglePauseMenu();
+            }
+            GUI.PreventPauseMenuToggle = true;
+
             if (!(GameMode is TestGameMode) && Screen.Selected == GameMain.GameScreen && RoundSummary != null)
             {
                 GUI.ClearMessages();

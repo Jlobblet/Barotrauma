@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 
@@ -157,6 +158,8 @@ namespace Barotrauma
         private float pulseTimer;
         private float pulseExpand;
         private bool flashed;
+
+        public GUISoundType ClickSound { get; set; } = GUISoundType.Click;
         
         public GUIButton(RectTransform rectT, string text = "", Alignment textAlignment = Alignment.Center, string style = "", Color? color = null) : base(style, rectT)
         {
@@ -216,6 +219,12 @@ namespace Barotrauma
                 
                 GUI.Style.ButtonPulse.Draw(spriteBatch, expandRect, ToolBox.GradientLerp(pulseExpand, Color.White, Color.White, Color.Transparent));
             }
+
+            if (UserData is string s && s == "ReadyCheckButton"  && ReadyCheck.lastReadyCheck > DateTime.Now)
+            {
+                float progress = (ReadyCheck.lastReadyCheck - DateTime.Now).Seconds / 60.0f;
+                Frame.Color = ToolBox.GradientLerp(progress, Color.White, GUI.Style.Red);
+            }
         }
 
         protected override void Update(float deltaTime)
@@ -247,7 +256,7 @@ namespace Barotrauma
                 }
                 else if (PlayerInput.PrimaryMouseButtonClicked())
                 {
-                    GUI.PlayUISound(GUISoundType.Click);
+                    SoundPlayer.PlayUISound(ClickSound);
                     if (OnClicked != null)
                     {
                         if (OnClicked(this, UserData))

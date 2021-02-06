@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Xml.Linq;
+using Barotrauma.MapCreatures.Behavior;
 
 namespace Barotrauma
 {
@@ -65,8 +66,8 @@ namespace Barotrauma
             Noise = new Vector2(
                 PerlinNoise.GetPerlin(Rect.X / 1000.0f, Rect.Y / 1000.0f),
                 PerlinNoise.GetPerlin(Rect.Y / 1000.0f + 0.5f, Rect.X / 1000.0f + 0.5f));
-
-            Color = DirtColor = Color.Lerp(new Color(10, 10, 10, 100), new Color(54, 57, 28, 200), Noise.X);
+            
+            DirtColor = Color.Lerp(new Color(10, 10, 10, 100), new Color(54, 57, 28, 200), Noise.X);
         }
 
         public bool SetColor(Color color)
@@ -389,14 +390,18 @@ namespace Barotrauma
 
         public List<FireSource> FireSources { get; private set; }
 
+        public List<DummyFireSource> FakeFireSources { get; private set; }
+
+        public BallastFloraBehavior BallastFlora { get; set; }
+
         public Hull(MapEntityPrefab prefab, Rectangle rectangle)
             : this (prefab, rectangle, Submarine.MainSub)
         {
 
         }
 
-        public Hull(MapEntityPrefab prefab, Rectangle rectangle, Submarine submarine)
-            : base (prefab, submarine)
+        public Hull(MapEntityPrefab prefab, Rectangle rectangle, Submarine submarine, ushort id = Entity.NullEntityID)
+            : base (prefab, submarine, id)
         {
             rect = rectangle;
 
@@ -405,6 +410,7 @@ namespace Barotrauma
             OxygenPercentage = 100.0f;
 
             FireSources = new List<FireSource>();
+            FakeFireSources = new List<DummyFireSource>();
 
             properties = SerializableProperty.GetProperties(this);
 
@@ -521,6 +527,8 @@ namespace Barotrauma
                 }
             }
             Pressure = rect.Y - rect.Height + waterVolume / rect.Width;
+            
+            BallastFlora?.OnMapLoaded();
         }
 
         public void AddToGrid(Submarine submarine)
@@ -554,7 +562,7 @@ namespace Barotrauma
         {
             if (!MathUtils.IsValid(amount))
             {
-                DebugConsole.ThrowError($"Attempted to move a hull by an invalid amount ({amount})\n{Environment.StackTrace}");
+                DebugConsole.ThrowError($"Attempted to move a hull by an invalid amount ({amount})\n{Environment.StackTrace.CleanupStackTrace()}");
                 return;
             }
 
@@ -583,11 +591,13 @@ namespace Barotrauma
             }
 
             List<FireSource> fireSourcesToRemove = new List<FireSource>(FireSources);
+            fireSourcesToRemove.AddRange(FakeFireSources);
             foreach (FireSource fireSource in fireSourcesToRemove)
             {
                 fireSource.Remove();
             }
             FireSources.Clear();
+            FakeFireSources.Clear();
             
             if (EntityGrids != null)
             {
@@ -602,6 +612,7 @@ namespace Barotrauma
         {
             base.Remove();
             hullList.Remove(this);
+            BallastFlora?.Remove();
 
             if (Submarine != null && !Submarine.Loading && !Submarine.Unloading)
             {
@@ -627,10 +638,17 @@ namespace Barotrauma
 
         public void AddFireSource(FireSource fireSource)
         {
-            FireSources.Add(fireSource);
+            if (fireSource is DummyFireSource dummyFire)
+            {
+                FakeFireSources.Add(dummyFire);
+            }
+            else
+            {
+                FireSources.Add(fireSource);
+            }
         }
 
-        public Decal AddDecal(UInt32 decalId, Vector2 worldPosition, float scale, bool isNetworkEvent)
+        public Decal AddDecal(UInt32 decalId, Vector2 worldPosition, float scale, bool isNetworkEvent, int? spriteIndex = null)
         {
             //clients are only allowed to create decals when the server says so
             if (!isNetworkEvent && GameMain.NetworkMember != null && GameMain.NetworkMember.IsClient)
@@ -644,11 +662,11 @@ namespace Barotrauma
                 DebugConsole.ThrowError($"Could not find a decal prefab with the UInt identifier {decalId}!");
                 return null;
             }
-            return AddDecal(decal.Name, worldPosition, scale, isNetworkEvent);
+            return AddDecal(decal.Name, worldPosition, scale, isNetworkEvent, spriteIndex);
         }
 
 
-        public Decal AddDecal(string decalName, Vector2 worldPosition, float scale, bool isNetworkEvent)
+        public Decal AddDecal(string decalName, Vector2 worldPosition, float scale, bool isNetworkEvent, int? spriteIndex = null)
         {
             //clients are only allowed to create decals when the server says so
             if (!isNetworkEvent && GameMain.NetworkMember != null && GameMain.NetworkMember.IsClient)
@@ -658,7 +676,7 @@ namespace Barotrauma
 
             if (decals.Count >= MaxDecalsPerHull) { return null; }
 
-            var decal = GameMain.DecalManager.CreateDecal(decalName, scale, worldPosition, this);
+            var decal = GameMain.DecalManager.CreateDecal(decalName, scale, worldPosition, this, spriteIndex);
             if (decal != null)
             {
                 if (GameMain.NetworkMember != null && GameMain.NetworkMember.IsServer)
@@ -675,18 +693,32 @@ namespace Barotrauma
         public override void Update(float deltaTime, Camera cam)
         {
             base.Update(deltaTime, cam);
+            
+            BallastFlora?.Update(deltaTime);
+            
             UpdateProjSpecific(deltaTime, cam);
 
             Oxygen -= OxygenDeteriorationSpeed * deltaTime;
 
+            if ((Character.Controlled?.CharacterHealth?.GetAffliction("psychosis")?.Strength ?? 0.0f) <= 0.0f)
+            {
+                for (int i = FakeFireSources.Count - 1; i >= 0; i--)
+                {
+                    if (FakeFireSources[i].CausedByPsychosis)
+                    {
+                        FakeFireSources[i].Remove();
+                    }
+                }
+            }
+
             FireSource.UpdateAll(FireSources, deltaTime);
+            FireSource.UpdateAll(FakeFireSources, deltaTime);
 
             foreach (Decal decal in decals)
             {
                 decal.Update(deltaTime);
             }
             decals.RemoveAll(d => d.FadeTimer >= d.LifeTime || d.BaseAlpha <= 0.001f);
-
 
             if (aiTarget != null)
             {
@@ -842,17 +874,31 @@ namespace Barotrauma
             }
         }
 
-        public void Extinguish(float deltaTime, float amount, Vector2 position)
+        public void Extinguish(float deltaTime, float amount, Vector2 position, bool extinguishRealFires = true, bool extinguishFakeFires = true)
         {
-            for (int i = FireSources.Count - 1; i >= 0; i--)
+            if (extinguishRealFires)
             {
-                FireSources[i].Extinguish(deltaTime, amount, position);
+                for (int i = FireSources.Count - 1; i >= 0; i--)
+                {
+                    FireSources[i].Extinguish(deltaTime, amount, position);
+                }
+            }
+            if (extinguishFakeFires)
+            {
+                for (int i = FakeFireSources.Count - 1; i >= 0; i--)
+                {
+                    FakeFireSources[i].Extinguish(deltaTime, amount, position);
+                }
             }
         }
 
         public void RemoveFire(FireSource fire)
         {
             FireSources.Remove(fire);
+            if (fire is DummyFireSource dummyFire)
+            {
+                FakeFireSources.Remove(dummyFire);
+            }
         }
 
         private readonly HashSet<Hull> adjacentHulls = new HashSet<Hull>();
@@ -1221,7 +1267,7 @@ namespace Barotrauma
             return index >= 0 && row >= 0 && BackgroundSections.Count > index && BackgroundSections[index] != null && BackgroundSections[index].RowIndex == row;
         }
         
-        public void SetSectionColorOrStrength(BackgroundSection section, Color? color, float? strength, bool requiresUpdate, bool isCleaning)
+        public void IncreaseSectionColorOrStrength(BackgroundSection section, Color? color, float? strength, bool requiresUpdate, bool isCleaning)
         {
             bool sectionUpdated = isCleaning;
             if (color != null)
@@ -1263,13 +1309,31 @@ namespace Barotrauma
             }
         }
 
+        public void SetSectionColorOrStrength(BackgroundSection section, Color? color, float? strength)
+        {
+            if (color != null)
+            {
+                section.SetColor(color.Value);                
+            }
+
+            if (strength != null)
+            {
+                float previous = section.SetColorStrength(Math.Max(minColorStrength, Math.Min(maxColorStrength, section.ColorStrength + strength.Value)));
+                if (previous != -1f)
+                {
+#if CLIENT
+                    paintAmount = Math.Max(0, paintAmount + (section.ColorStrength - previous) / BackgroundSections.Count);
+#endif
+                }
+            }
+        }
+
         public void DirtySections(List<BackgroundSection> sections, float dirtyVal)
         {
             if (sections == null) { return; }
             for (int i = 0; i < sections.Count; i++)
             {
-                float sectionDirtyVal = dirtyVal;
-                SetSectionColorOrStrength(sections[i], sections[i].DirtColor, sectionDirtyVal, false, false);
+                IncreaseSectionColorOrStrength(sections[i], sections[i].DirtColor, dirtyVal, false, false);
             }
         }
 
@@ -1283,15 +1347,21 @@ namespace Barotrauma
                 {
                     decal.Clean(cleanVal);
                     decalsCleaned = true;
+#if SERVER
+                    decalUpdatePending = true;
+#elif CLIENT
+                    pendingDecalUpdates.Add(decal);
+                    networkUpdatePending = true;
+#endif
                 }
             }
 
             if (section.ColorStrength == 0 && !decalsCleaned) { return; }
-            SetSectionColorOrStrength(section, null, cleanVal, updateRequired, true);
+            IncreaseSectionColorOrStrength(section, null, cleanVal, updateRequired, true);
         }
 #endregion
 
-        public static Hull Load(XElement element, Submarine submarine)
+        public static Hull Load(XElement element, Submarine submarine, IdRemap idRemap)
         {
             Rectangle rect;
             if (element.Attribute("rect") != null)
@@ -1308,23 +1378,13 @@ namespace Barotrauma
                     int.Parse(element.Attribute("height").Value));
             }
 
-            var hull = new Hull(MapEntityPrefab.Find(null, "hull"), rect, submarine)
+            var hull = new Hull(MapEntityPrefab.Find(null, "hull"), rect, submarine, idRemap.GetOffsetId(element))
             {
-                WaterVolume = element.GetAttributeFloat("pressure", 0.0f),
-                ID = (ushort)int.Parse(element.Attribute("ID").Value)
+                WaterVolume = element.GetAttributeFloat("pressure", 0.0f)
             };
-            hull.OriginalID = hull.ID;
             hull.linkedToID = new List<ushort>();
 
-            string linkedToString = element.GetAttributeString("linked", "");
-            if (linkedToString != "")
-            {
-                string[] linkedToIds = linkedToString.Split(',');
-                for (int i = 0; i < linkedToIds.Length; i++)
-                {
-                    hull.linkedToID.Add((ushort)int.Parse(linkedToIds[i]));
-                }
-            }
+            hull.ParseLinks(element, idRemap);
 
             string originalAmbientLight = element.GetAttributeString("originalambientlight", null);
             if (!string.IsNullOrWhiteSpace(originalAmbientLight))
@@ -1341,10 +1401,21 @@ namespace Barotrauma
                         Vector2 pos = subElement.GetAttributeVector2("pos", Vector2.Zero);
                         float scale = subElement.GetAttributeFloat("scale", 1.0f);
                         float timer = subElement.GetAttributeFloat("timer", 1.0f);
+                        float baseAlpha = subElement.GetAttributeFloat("alpha", 1.0f);
                         var decal = hull.AddDecal(id, pos + hull.WorldRect.Location.ToVector2(), scale, true);
                         if (decal != null)
                         {
                             decal.FadeTimer = timer;
+                            decal.BaseAlpha = baseAlpha;
+                        }
+                        break;
+                    case "ballastflorabehavior":
+                        string identifier = subElement.GetAttributeString("identifier", string.Empty);
+                        BallastFloraPrefab prefab = BallastFloraPrefab.Find(identifier);
+                        if (prefab != null)
+                        {
+                            hull.BallastFlora = new BallastFloraBehavior(hull, prefab, Vector2.Zero);
+                            hull.BallastFlora.LoadSave(subElement);
                         }
                         break;
                 }
@@ -1362,7 +1433,7 @@ namespace Barotrauma
                     if (int.TryParse(backgroundSectionData[0], out int index) && 
                         float.TryParse(backgroundSectionData[2], NumberStyles.Any, CultureInfo.InvariantCulture, out float strength))
                     {
-                        hull.SetSectionColorOrStrength(hull.BackgroundSections[index], color, strength, false, false);
+                        hull.SetSectionColorOrStrength(hull.BackgroundSections[index], color, strength);
                     }
                 }
             }
@@ -1377,7 +1448,7 @@ namespace Barotrauma
         {
             if (Submarine == null)
             {
-                string errorMsg = "Error - tried to save a hull that's not a part of any submarine.\n" + Environment.StackTrace;
+                string errorMsg = "Error - tried to save a hull that's not a part of any submarine.\n" + Environment.StackTrace.CleanupStackTrace();
                 DebugConsole.ThrowError(errorMsg);
                 GameAnalyticsManager.AddErrorEventOnce("Hull.Save:WorldHull", GameAnalyticsSDK.Net.EGAErrorSeverity.Error, errorMsg);
                 return null;
@@ -1420,9 +1491,12 @@ namespace Barotrauma
                         new XAttribute("id", decal.Prefab.Identifier),
                         new XAttribute("pos", XMLExtensions.Vector2ToString(decal.NonClampedPosition)),
                         new XAttribute("scale", decal.Scale.ToString("G", CultureInfo.InvariantCulture)),
-                        new XAttribute("timer", decal.FadeTimer.ToString("G", CultureInfo.InvariantCulture))
+                        new XAttribute("timer", decal.FadeTimer.ToString("G", CultureInfo.InvariantCulture)),
+                        new XAttribute("alpha", decal.BaseAlpha.ToString("G", CultureInfo.InvariantCulture))
                     ));
             }
+
+            BallastFlora?.Save(element);
 
             SerializableProperty.SerializeProperties(this, element);
             parentElement.Add(element);

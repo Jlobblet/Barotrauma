@@ -147,6 +147,14 @@ namespace Barotrauma
                     c.InGame && (IsOwner(c) || c.HasPermission(ClientPermissions.ManageCampaign)));
         }
 
+        public void LoadPets()
+        {
+            if (petsElement != null)
+            {
+                PetBehavior.LoadPets(petsElement);
+            }
+        }
+
         protected override IEnumerable<object> DoLevelTransition(TransitionType transitionType, LevelData newLevel, Submarine leavingSub, bool mirror, List<TraitorMissionResult> traitorResults)
         {
             lastUpdateID++;
@@ -207,6 +215,9 @@ namespace Barotrauma
                 }
 
                 characterData.ForEach(cd => cd.HasSpawned = false);
+
+                petsElement = new XElement("pets");
+                PetBehavior.SavePets(petsElement);
 
                 //remove all items that are in someone's inventory
                 foreach (Character c in Character.CharacterList)
@@ -694,6 +705,10 @@ namespace Barotrauma
                             }
 
                             pendingHireInfos.Add(match);
+                            if (pendingHireInfos.Count + CrewManager.CharacterInfos.Count() >= CrewManager.MaxCrewSize)
+                            {
+                                break;
+                            }
                         }
                         location.HireManager.PendingHires = pendingHireInfos;
                     }
@@ -763,6 +778,11 @@ namespace Barotrauma
             Map.Save(modeElement);
             CargoManager?.SavePurchasedItems(modeElement);
             UpgradeManager?.SavePendingUpgrades(modeElement, UpgradeManager?.PendingUpgrades);
+
+            if (petsElement != null)
+            {
+                modeElement.Add(petsElement);
+            }
 
             // save bots
             CrewManager.SaveMultiplayer(modeElement);

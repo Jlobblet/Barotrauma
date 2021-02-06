@@ -146,7 +146,7 @@ namespace Barotrauma.Items.Components
         public bool DrawHudWhenEquipped
         {
             get;
-            private set;
+            protected set;
         }
 
         [Serialize(false, false, description: "Can the item be selected by interacting with it.")]
@@ -394,7 +394,10 @@ namespace Barotrauma.Items.Components
         }
 
         //called when isActive is true and condition > 0.0f
-        public virtual void Update(float deltaTime, Camera cam) { }
+        public virtual void Update(float deltaTime, Camera cam) 
+        {
+            ApplyStatusEffects(ActionType.OnActive, deltaTime);
+        }
 
         //called when isActive is true and condition == 0.0f
         public virtual void UpdateBroken(float deltaTime, Camera cam)
@@ -604,7 +607,7 @@ namespace Barotrauma.Items.Components
 
             if (character == null)
             {
-                string errorMsg = "ItemComponent.DegreeOfSuccess failed (character was null).\n" + Environment.StackTrace;
+                string errorMsg = "ItemComponent.DegreeOfSuccess failed (character was null).\n" + Environment.StackTrace.CleanupStackTrace();
                 DebugConsole.ThrowError(errorMsg);
                 GameAnalyticsManager.AddErrorEventOnce("ItemComponent.DegreeOfSuccess:CharacterNull", GameAnalyticsSDK.Net.EGAErrorSeverity.Error, errorMsg);
                 return 0.0f;
@@ -763,7 +766,7 @@ namespace Barotrauma.Items.Components
             }
         }
 
-        public virtual void Load(XElement componentElement, bool usePrefabValues)
+        public virtual void Load(XElement componentElement, bool usePrefabValues, IdRemap idRemap)
         {
             if (componentElement != null) 
             { 
@@ -846,7 +849,7 @@ namespace Barotrauma.Items.Components
                 DebugConsole.ThrowError("Error while loading entity of the type " + t + ".", e.InnerException);
                 GameAnalyticsManager.AddErrorEventOnce("ItemComponent.Load:TargetInvocationException" + item.Name + element.Name,
                     GameAnalyticsSDK.Net.EGAErrorSeverity.Error,
-                    "Error while loading entity of the type " + t + " (" + e.InnerException + ")\n" + Environment.StackTrace);
+                    "Error while loading entity of the type " + t + " (" + e.InnerException + ")\n" + Environment.StackTrace.CleanupStackTrace());
             }
 
             return ic;
@@ -963,12 +966,12 @@ namespace Barotrauma.Items.Components
             return false;
         }
 
-        protected AIObjectiveContainItem AIContainItems<T>(ItemContainer container, Character character, AIObjective objective, int itemCount, bool equip, bool removeEmpty, bool spawnItemIfNotFound = false) where T : ItemComponent
+        protected AIObjectiveContainItem AIContainItems<T>(ItemContainer container, Character character, AIObjective currentObjective, int itemCount, bool equip, bool removeEmpty, bool spawnItemIfNotFound = false, bool dropItemOnDeselected = false) where T : ItemComponent
         {
             AIObjectiveContainItem containObjective = null;
             if (character.AIController is HumanAIController aiController)
             {
-                containObjective = new AIObjectiveContainItem(character, container.GetContainableItemIdentifiers.ToArray(), container, objective.objectiveManager, spawnItemIfNotFound: spawnItemIfNotFound)
+                containObjective = new AIObjectiveContainItem(character, container.GetContainableItemIdentifiers.ToArray(), container, currentObjective.objectiveManager, spawnItemIfNotFound: spawnItemIfNotFound)
                 {
                     targetItemCount = itemCount,
                     Equip = equip,
@@ -986,11 +989,21 @@ namespace Barotrauma.Items.Components
                         return 1.0f;
                     }
                 };
-                containObjective.Abandoned += () =>
+                containObjective.Abandoned += () => aiController.IgnoredItems.Add(container.Item);
+                if (dropItemOnDeselected)
                 {
-                    aiController.IgnoredItems.Add(container.Item);
-                };
-                objective.AddSubObjective(containObjective);
+                    currentObjective.Deselected += () =>
+                    {
+                        if (containObjective == null) { return; }
+                        if (containObjective.IsCompleted) { return; }
+                        Item item = containObjective.ItemToContain;
+                        if (item != null && character.CanInteractWith(item, checkLinked: false))
+                        {
+                            item.Drop(character);
+                        }
+                    };
+                }
+                currentObjective.AddSubObjective(containObjective);
             }
             return containObjective;
         }
@@ -1011,11 +1024,12 @@ namespace Barotrauma.Items.Components
                         if (FindSuitableContainer(character,
                             i =>
                             {
+                                if (i.IsThisOrAnyContainerIgnoredByAI()) { return 0; }
                                 var container = i.GetComponent<ItemContainer>();
                                 if (container == null) { return 0; }
                                 if (container.Inventory.IsFull()) { return 0; }
-                            // Ignore containers that are identical to the source container
-                            if (sourceC != null && container.Item.Prefab == sourceC.Item.Prefab) { return 0; }
+                                // Ignore containers that are identical to the source container
+                                if (sourceC != null && container.Item.Prefab == sourceC.Item.Prefab) { return 0; }
                                 if (container.ShouldBeContained(containedItem, out bool isRestrictionsDefined))
                                 {
                                     if (isRestrictionsDefined)

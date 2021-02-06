@@ -89,6 +89,16 @@ namespace Barotrauma.Items.Components
             }
         }
 
+        /// <summary>
+        /// Automatically cleared after docking -> no need to unregister
+        /// </summary>
+        public event Action OnDocked;
+
+        /// <summary>
+        /// Automatically cleared after undocking -> no need to unregister
+        /// </summary>
+        public event Action OnUnDocked;
+
         public DockingPort(Item item, XElement element)
             : base(item, element)
         {
@@ -213,6 +223,9 @@ namespace Barotrauma.Items.Components
                 item.CreateServerEvent(this);
             }
 #endif
+
+            OnDocked?.Invoke();
+            OnDocked = null;
         }
 
 
@@ -431,7 +444,7 @@ namespace Barotrauma.Items.Components
                 string errorMsg =
                     "Attempted to create a door body at an invalid position (item pos: " + item.Position
                     + ", item world pos: " + item.WorldPosition
-                    + ", docking target world pos: " + DockingTarget.Door.Item.WorldPosition + ")\n" + Environment.StackTrace;
+                    + ", docking target world pos: " + DockingTarget.Door.Item.WorldPosition + ")\n" + Environment.StackTrace.CleanupStackTrace();
 
                 DebugConsole.ThrowError(errorMsg);
                 GameAnalyticsManager.AddErrorEventOnce(
@@ -817,6 +830,9 @@ namespace Barotrauma.Items.Components
 
             docked = false;
 
+            Item.Submarine.EnableObstructedWaypoints(DockingTarget.Item.Submarine);
+            obstructedWayPointsDisabled = false;
+
             DockingTarget.Undock();
             DockingTarget = null;
 
@@ -860,9 +876,6 @@ namespace Barotrauma.Items.Components
             outsideBlocker?.Body.Remove(outsideBlocker);
             outsideBlocker = null;
 
-            Item.Submarine.EnableObstructedWaypoints();
-            obstructedWayPointsDisabled = false;
-
 #if SERVER
             if (GameMain.Server != null && (!item.Submarine?.Loading ?? true))
             {
@@ -870,6 +883,8 @@ namespace Barotrauma.Items.Components
                 item.CreateServerEvent(this);
             }
 #endif
+            OnUnDocked?.Invoke();
+            OnUnDocked = null;
         }
 
         public override void Update(float deltaTime, Camera cam)
@@ -1034,7 +1049,6 @@ namespace Barotrauma.Items.Components
                     Dock(dockingPort);
                 }
             }
-
         }
 
         public override void ReceiveSignal(int stepsTaken, string signal, Connection connection, Item source, Character sender, float power = 0.0f, float signalStrength = 1.0f)

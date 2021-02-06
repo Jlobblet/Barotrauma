@@ -98,6 +98,9 @@ namespace Barotrauma
                     case "pendingupgrades":
                         UpgradeManager = new UpgradeManager(this, subElement, isSingleplayer: true);
                         break;
+                    case "pets":
+                        petsElement = subElement;
+                        break;
                 }
             }
 
@@ -213,6 +216,10 @@ namespace Barotrauma
             crewDead = false;
             endTimer = 5.0f;
             CrewManager.InitSinglePlayerRound();
+            if (petsElement != null)
+            {
+                PetBehavior.LoadPets(petsElement);
+            }
         }
 
         protected override void LoadInitialLevel()
@@ -361,6 +368,9 @@ namespace Barotrauma
             SoundPlayer.OverrideMusicDuration = 18.0f;
             crewDead = false;
 
+            LevelData lvlData = GameMain.GameSession.LevelData;
+            bool beaconActive = GameMain.GameSession.Level.CheckBeaconActive();
+
             GameMain.GameSession.EndRound("", traitorResults, transitionType);
             var continueButton = GameMain.GameSession.RoundSummary?.ContinueButton;
             RoundSummary roundSummary = null;
@@ -413,8 +423,6 @@ namespace Barotrauma
 
             //--------------------------------------
 
-            bool save = false;
-
             if (success)
             {
                 if (leavingSub != Submarine.MainSub && !leavingSub.DockedTo.Contains(Submarine.MainSub))
@@ -446,6 +454,8 @@ namespace Barotrauma
                         }
                     }
                 }
+
+                lvlData.IsBeaconActive = beaconActive;
 
                 SaveUtil.SaveGame(GameMain.GameSession.SavePath);
             }
@@ -706,6 +716,10 @@ namespace Barotrauma
                     c.Inventory?.DeleteAllItems();
                 }
             }
+
+            petsElement = new XElement("pets");
+            PetBehavior.SavePets(petsElement);
+            modeElement.Add(petsElement);            
 
             CrewManager.Save(modeElement);
             CampaignMetadata.Save(modeElement);

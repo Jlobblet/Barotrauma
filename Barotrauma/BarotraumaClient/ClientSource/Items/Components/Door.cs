@@ -261,7 +261,23 @@ namespace Barotrauma.Items.Components
                 if (!isNetworkMessage || open != PredictedState)
                 {
                     StopPicking(null);
-                    PlaySound(forcedOpen ? ActionType.OnPicked : ActionType.OnUse);
+                    ActionType actionType = ActionType.OnUse;
+                    if (forcedOpen)
+                    {
+                        actionType = ActionType.OnPicked;
+                    }
+                    else
+                    {
+                        if (open && HasSoundsOfType[(int)ActionType.OnOpen])
+                        {
+                            actionType = ActionType.OnOpen;
+                        }
+                        else if (!open && HasSoundsOfType[(int)ActionType.OnClose])
+                        {
+                            actionType = ActionType.OnClose;
+                        }
+                    }
+                    PlaySound(actionType);
                     if (isOpen) { stuck = MathHelper.Clamp(stuck - StuckReductionOnOpen, 0.0f, 100.0f); }
                 }
             }       
@@ -275,6 +291,7 @@ namespace Barotrauma.Items.Components
             bool broken     = msg.ReadBoolean();
             bool forcedOpen = msg.ReadBoolean();
             bool isStuck    = msg.ReadBoolean();
+            bool isJammed   = msg.ReadBoolean();
             SetState(open, isNetworkMessage: true, sendNetworkMessage: false, forcedOpen: forcedOpen);
             stuck = msg.ReadRangedSingle(0.0f, 100.0f, 8);
             UInt16 lastUserID = msg.ReadUInt16();
@@ -285,6 +302,7 @@ namespace Barotrauma.Items.Components
                 toggleCooldownTimer = ToggleCoolDown;
             }
             this.isStuck = isStuck;
+            this.isJammed = isJammed;
             if (isStuck) { OpenState = 0.0f; }
             IsBroken = broken;
             PredictedState = null;

@@ -1,3 +1,4 @@
+using Barotrauma.Extensions;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using System;
@@ -31,7 +32,7 @@ namespace Barotrauma.Lights
             get { return range; }
             set
             {
-                range = MathHelper.Clamp(value, 0.0f, 2048.0f);
+                range = MathHelper.Clamp(value, 0.0f, 4096.0f);
                 TextureRange = range;
                 if (OverrideLightTexture != null)
                 {
@@ -42,6 +43,68 @@ namespace Barotrauma.Lights
             }
         }
 
+        [Serialize(1f, true), Editable(minValue: 0.01f, maxValue: 100f, ValueStep = 0.1f, DecimalCount = 2)]
+        public float Scale { get; set; }
+
+        [Serialize("0, 0", true), Editable(ValueStep = 1, DecimalCount = 1, MinValueFloat = -1000f, MaxValueFloat = 1000f)]
+        public Vector2 Offset { get; set; }
+
+        [Serialize(0f, true), Editable(MinValueFloat = -360, MaxValueFloat = 360, ValueStep = 1, DecimalCount = 0)]
+        public float Rotation { get; set; }
+
+        public Vector2 GetOffset() => Vector2.Transform(Offset, Matrix.CreateRotationZ(Rotation));
+
+        private float flicker;
+        [Editable, Serialize(0.0f, false, description: "How heavily the light flickers. 0 = no flickering, 1 = the light will alternate between completely dark and full brightness.")]
+        public float Flicker
+        {
+            get { return flicker; }
+            set
+            {
+                flicker = MathHelper.Clamp(value, 0.0f, 1.0f);
+            }
+        }
+
+        [Editable, Serialize(1.0f, false, description: "How fast the light flickers.")]
+        public float FlickerSpeed
+        {
+            get;
+            set;
+        }
+
+        private float pulseFrequency;
+        [Editable, Serialize(0.0f, true, description: "How rapidly the light pulsates (in Hz). 0 = no blinking.")]
+        public float PulseFrequency
+        {
+            get { return pulseFrequency; }
+            set
+            {
+                pulseFrequency = MathHelper.Clamp(value, 0.0f, 60.0f);
+            }
+        }
+
+        private float pulseAmount;
+        [Editable(MinValueFloat = 0.0f, MaxValueFloat = 1.0f, DecimalCount = 2), Serialize(0.0f, true, description: "How much light pulsates (in Hz). 0 = not at all, 1 = alternates between full brightness and off.")]
+        public float PulseAmount
+        {
+            get { return pulseAmount; }
+            set
+            {
+                pulseAmount = MathHelper.Clamp(value, 0.0f, 1.0f);
+            }
+        }
+
+        private float blinkFrequency;
+        [Editable, Serialize(0.0f, true, description: "How rapidly the light blinks on and off (in Hz). 0 = no blinking.")]
+        public float BlinkFrequency
+        {
+            get { return blinkFrequency; }
+            set
+            {
+                blinkFrequency = MathHelper.Clamp(value, 0.0f, 60.0f);
+            }
+        }
+        
         public float TextureRange
         {
             get;
@@ -80,6 +143,7 @@ namespace Barotrauma.Lights
                 switch (subElement.Name.ToString().ToLowerInvariant())
                 {
                     case "sprite":
+                    case "lightsprite":
                         {
                             LightSprite = new Sprite(subElement);
                             float spriteAlpha = subElement.GetAttributeFloat("alpha", -1.0f);
@@ -135,6 +199,8 @@ namespace Barotrauma.Lights
         const float RotationRecalculationThreshold = 0.02f;
 
         private static Texture2D lightTexture;
+
+        private float blinkTimer, flickerState, pulseState;
 
         private VertexPositionColorTexture[] vertices;
         private short[] indices;
@@ -239,11 +305,13 @@ namespace Barotrauma.Lights
             }
         }
 
+        private Vector2 _spriteScale = Vector2.One;
+
         public Vector2 SpriteScale
         {
-            get;
-            set;
-        } = Vector2.One;
+            get { return _spriteScale * lightSourceParams.Scale; }
+            set { _spriteScale = value; }
+        }
 
         public float? OverrideLightSpriteAlpha
         {
@@ -278,11 +346,19 @@ namespace Barotrauma.Lights
         {
             get { return lightSourceParams.LightSprite; }
         }
-        
+
+        private Vector2 OverrideLightTextureOrigin => OverrideLightTexture.Origin + LightSourceParams.Offset;
+
         public Color Color
         {
             get { return lightSourceParams.Color; }
             set { lightSourceParams.Color = value; }
+        }
+
+        public float CurrentBrightness
+        {
+            get;
+            private set;
         }
         
         public float Range
@@ -331,15 +407,41 @@ namespace Barotrauma.Lights
 
         public bool Enabled = true;
 
-        public LightSource (XElement element)
+        private ISerializableEntity conditionalTarget;
+        private readonly PropertyConditional.Comparison comparison;
+        private readonly List<PropertyConditional> conditionals = new List<PropertyConditional>();
+
+        public LightSource (XElement element, ISerializableEntity conditionalTarget = null)
             : this(Vector2.Zero, 100.0f, Color.White, null)
         {
             lightSourceParams = new LightSourceParams(element);
             CastShadows = element.GetAttributeBool("castshadows", true);
+            string comparison = element.GetAttributeString("comparison", null);
+            if (comparison != null)
+            {
+                Enum.TryParse(comparison, ignoreCase: true, out this.comparison);
+            }
 
             if (lightSourceParams.DeformableLightSpriteElement != null)
             {
                 DeformableLightSprite = new DeformableSprite(lightSourceParams.DeformableLightSpriteElement, invert: true);
+            }
+
+            this.conditionalTarget = conditionalTarget;
+            foreach (XElement subElement in element.Elements())
+            {
+                switch (subElement.Name.ToString().ToLowerInvariant())
+                {
+                    case "conditional":
+                        foreach (XAttribute attribute in subElement.Attributes())
+                        {
+                            if (PropertyConditional.IsValid(attribute))
+                            {
+                                conditionals.Add(new PropertyConditional(attribute));
+                            }
+                        }
+                        break;
+                }
             }
         }
 
@@ -363,7 +465,34 @@ namespace Barotrauma.Lights
             CastShadows = true;            
             texture = LightTexture;
             diffToSub = new Dictionary<Submarine, Vector2>();
-            if (addLight) GameMain.LightManager.AddLight(this);
+            if (addLight) { GameMain.LightManager.AddLight(this); }
+        }
+
+        public void Update(float deltaTime)
+        {
+            float brightness = 1.0f;
+            if (lightSourceParams.BlinkFrequency > 0.0f)
+            {
+                blinkTimer = (blinkTimer + deltaTime * lightSourceParams.BlinkFrequency) % 1.0f;
+                if (blinkTimer > 0.5f)
+                {
+                    CurrentBrightness = 0.0f;
+                    return;
+                }
+            }
+            if (lightSourceParams.PulseFrequency > 0.0f && lightSourceParams.PulseAmount > 0.0f)
+            {
+                pulseState = (pulseState + deltaTime * lightSourceParams.PulseFrequency) % 1.0f;
+                //oscillate between 0-1
+                brightness *= 1.0f - (float)(Math.Sin(pulseState * MathHelper.TwoPi) + 1.0f) / 2.0f * lightSourceParams.PulseAmount;
+            }
+            if (lightSourceParams.Flicker > 0.0f)
+            {
+                flickerState += deltaTime * lightSourceParams.FlickerSpeed;
+                flickerState %= 255;
+                brightness *= 1.0f - PerlinNoise.GetPerlin(flickerState, flickerState * 0.5f) * lightSourceParams.Flicker;
+            }
+            CurrentBrightness = brightness;
         }
         
         /// <summary>
@@ -469,13 +598,12 @@ namespace Barotrauma.Lights
 
                         //recalculate vertices if the subs have moved > 5 px relative to each other
                         Vector2 diff = ParentSub.WorldPosition - sub.WorldPosition;
-                        Vector2 prevDiff;
-                        if (!diffToSub.TryGetValue(sub, out prevDiff))
+                        if (!diffToSub.TryGetValue(sub, out Vector2 prevDiff))
                         {
                             diffToSub.Add(sub, diff);
                             NeedsRecalculation = true;
                         }
-                        else if (Vector2.DistanceSquared(diff, prevDiff) > 5.0f*5.0f)
+                        else if (Vector2.DistanceSquared(diff, prevDiff) > 5.0f * 5.0f)
                         {
                             diffToSub[sub] = diff;
                             NeedsRecalculation = true;
@@ -493,7 +621,7 @@ namespace Barotrauma.Lights
             {
                 return null;
             }
-            if (Range < 1.0f || Color.A < 0.01f) return null;
+            if (Range < 1.0f || Color.A < 1) { return null; }
 
             Vector2 drawPos = position;
             if (ParentSub != null) drawPos += ParentSub.DrawPosition;
@@ -535,7 +663,7 @@ namespace Barotrauma.Lights
 
                 var overrideTextureDims = new Vector2(OverrideLightTexture.SourceRect.Width, OverrideLightTexture.SourceRect.Height);
 
-                Vector2 origin = OverrideLightTexture.Origin;
+                Vector2 origin = OverrideLightTextureOrigin;
 
                 origin /= Math.Max(overrideTextureDims.X, overrideTextureDims.Y);
                 origin -= Vector2.One * 0.5f;
@@ -844,8 +972,13 @@ namespace Barotrauma.Lights
             {
                 overrideTextureDims = new Vector2(OverrideLightTexture.SourceRect.Width, OverrideLightTexture.SourceRect.Height);
 
-                Vector2 origin = OverrideLightTexture.Origin;
-                if (LightSpriteEffect == SpriteEffects.FlipHorizontally) { origin.X = OverrideLightTexture.SourceRect.Width - origin.X; }
+                Vector2 origin = OverrideLightTextureOrigin;
+                if (LightSpriteEffect == SpriteEffects.FlipHorizontally) 
+                { 
+                    origin.X = OverrideLightTexture.SourceRect.Width - origin.X;
+                    cosAngle = -cosAngle;
+                    sinAngle = -sinAngle;
+                }
                 if (LightSpriteEffect == SpriteEffects.FlipVertically) { origin.Y = OverrideLightTexture.SourceRect.Height - origin.Y; }
                 uvOffset = (origin / overrideTextureDims) - new Vector2(0.5f, 0.5f);
             }
@@ -982,7 +1115,7 @@ namespace Barotrauma.Lights
             lightVolumeBuffer.SetData<VertexPositionColorTexture>(vertices, 0, vertexCount);
             lightVolumeIndexBuffer.SetData<short>(indices, 0, indexCount);
 
-            Vector2 GetUV(Vector2 vert, SpriteEffects effects)
+            static Vector2 GetUV(Vector2 vert, SpriteEffects effects)
             {
                 if (effects == SpriteEffects.FlipHorizontally) 
                 { 
@@ -1031,7 +1164,7 @@ namespace Barotrauma.Lights
                 {
                     var overrideTextureDims = new Vector2(OverrideLightTexture.SourceRect.Width, OverrideLightTexture.SourceRect.Height);
 
-                    Vector2 origin = OverrideLightTexture.Origin;
+                    Vector2 origin = OverrideLightTextureOrigin;
 
                     origin /= Math.Max(overrideTextureDims.X, overrideTextureDims.Y);
                     origin *= TextureRange;
@@ -1059,13 +1192,12 @@ namespace Barotrauma.Lights
 
             if (DeformableLightSprite != null)
             {
-                Vector2 origin = DeformableLightSprite.Origin;
+                Vector2 origin = DeformableLightSprite.Origin + LightSourceParams.GetOffset();
                 Vector2 drawPos = position;
                 if (ParentSub != null)
                 {
                     drawPos += ParentSub.DrawPosition;
                 }
-
                 if (LightSpriteEffect == SpriteEffects.FlipHorizontally)
                 {
                     origin.X = DeformableLightSprite.Sprite.SourceRect.Width - origin.X;
@@ -1077,14 +1209,14 @@ namespace Barotrauma.Lights
 
                 DeformableLightSprite.Draw(
                     cam, new Vector3(drawPos, 0.0f),
-                    origin, -Rotation, SpriteScale,
-                    new Color(Color, lightSourceParams.OverrideLightSpriteAlpha ?? Color.A / 255.0f),
+                    origin, -Rotation + MathHelper.ToRadians(LightSourceParams.Rotation), SpriteScale,
+                    new Color(Color, (lightSourceParams.OverrideLightSpriteAlpha ?? Color.A / 255.0f) * CurrentBrightness),
                     LightSpriteEffect == SpriteEffects.FlipVertically);
             }
 
             if (LightSprite != null)
             {
-                Vector2 origin = LightSprite.Origin;
+                Vector2 origin = LightSprite.Origin + LightSourceParams.GetOffset();
                 if ((LightSpriteEffect & SpriteEffects.FlipHorizontally) == SpriteEffects.FlipHorizontally)
                 {
                     origin.X = LightSprite.SourceRect.Width - origin.X;
@@ -1102,9 +1234,9 @@ namespace Barotrauma.Lights
                 drawPos.Y = -drawPos.Y;
 
                 LightSprite.Draw(
-                    spriteBatch, drawPos, 
-                    new Color(Color, lightSourceParams.OverrideLightSpriteAlpha ?? Color.A / 255.0f),
-                    origin, -Rotation, SpriteScale, LightSpriteEffect);
+                    spriteBatch, drawPos,
+                    new Color(Color, (lightSourceParams.OverrideLightSpriteAlpha ?? Color.A / 255.0f) * CurrentBrightness),
+                    origin, -Rotation + MathHelper.ToRadians(LightSourceParams.Rotation), SpriteScale, LightSpriteEffect);
             }
 
             if (GameMain.DebugDraw && Screen.Selected.Cam.Zoom > 0.1f)
@@ -1128,12 +1260,27 @@ namespace Barotrauma.Lights
                     GUI.DrawLine(spriteBatch, drawPos - Vector2.One * Range, drawPos + Vector2.One * Range, Color);
                     GUI.DrawLine(spriteBatch, drawPos - new Vector2(1.0f, -1.0f) * Range, drawPos + new Vector2(1.0f, -1.0f) * Range, Color);
                 }
+            }   
+        }
+
+        public void CheckConditionals()
+        {
+            if (conditionals.None()) { return; }
+            if (conditionalTarget == null) { return; }
+            if (comparison == PropertyConditional.Comparison.And)
+            {
+                Enabled = conditionals.All(c => c.Matches(conditionalTarget));
             }
-            
+            else
+            {
+                Enabled = conditionals.Any(c => c.Matches(conditionalTarget));
+            }
         }
 
         public void DrawLightVolume(SpriteBatch spriteBatch, BasicEffect lightEffect, Matrix transform)
         {
+            if (Range < 1.0f || Color.A < 1 || CurrentBrightness <= 0.0f) { return; }
+
             if (CastShadows)
             {
                 CheckHullsInRange();
@@ -1154,10 +1301,9 @@ namespace Barotrauma.Lights
                 if (ParentSub != null) drawPos += ParentSub.DrawPosition;
                 drawPos.Y = -drawPos.Y;
 
-                spriteBatch.Draw(currentTexture, drawPos, null, Color, -rotation, center, scale, SpriteEffects.None, 1);
+                spriteBatch.Draw(currentTexture, drawPos, null, Color.Multiply(CurrentBrightness), -rotation, center, scale, SpriteEffects.None, 1);
                 return;
             }
-
 
             if (NeedsRecalculation)
             {
@@ -1168,7 +1314,6 @@ namespace Barotrauma.Lights
                 NeedsRecalculation = false;
             }
 
-
             Vector2 offset = ParentSub == null ? Vector2.Zero : ParentSub.DrawPosition;
             lightEffect.World =
                 Matrix.CreateTranslation(-new Vector3(position, 0.0f)) * 
@@ -1178,7 +1323,7 @@ namespace Barotrauma.Lights
 
             if (vertexCount == 0) { return; }
 
-            lightEffect.DiffuseColor = (new Vector3(Color.R, Color.G, Color.B) * (Color.A / 255.0f)) / 255.0f;
+            lightEffect.DiffuseColor = (new Vector3(Color.R, Color.G, Color.B) * (Color.A / 255.0f * CurrentBrightness)) / 255.0f;
             if (OverrideLightTexture != null)
             {
                 lightEffect.Texture = OverrideLightTexture.Texture;
